@@ -1,0 +1,67 @@
+# Game files and anything derived from them stay local, never in git.
+*.iso
+game/
+work/
+out/
+recompiled/
+
+# --- <local> shared ignore block (init-project.ps1) ---
+node_modules/
+.pnpm-store/
+.venv/
+venv/
+__pycache__/
+dist/
+build/
+.next/
+.cache/
+coverage/
+.gradle/
+.idea/
+.vs/
+Library/
+Temp/
+Intermediate/
+Binaries/
+DerivedDataCache/
+Saved/
+Builds/
+.vercel/
+.claude/settings.local.json
+.claude/worktrees/
+# secrets stay local
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+*.ppk
+id_rsa*
+*secret*
+*credential*
+# noise and large binaries
+*.log
+*.tmp
+desktop.ini
+Thumbs.db
+.DS_Store
+*.zip
+*.7z
+*.rar
+*.apk
+*.aab
+*.exe
+*.mp4
+*.mov
+*.mkv
+*.wav
+*.flac
+*.psd
+*.safetensors
+*.gguf
+*.ckpt
+# --- end shared block ---
