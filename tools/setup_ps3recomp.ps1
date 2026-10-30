@@ -26,7 +26,7 @@ if ($Export) {
   if (CopyGit status --porcelain) { throw "Uncommitted changes in $copy. Commit them first." }
   New-Item -ItemType Directory -Force $patches | Out-Null
   Get-ChildItem $patches -Filter *.patch | Remove-Item
-  CopyGit format-patch --quiet --no-signature --zero-commit -o $patches $Commit
+  CopyGit format-patch --quiet --no-numbered --no-signature --zero-commit -o $patches $Commit
   "exported $((Get-ChildItem $patches -Filter *.patch).Count) patch(es) to $patches"
   exit 0
 }

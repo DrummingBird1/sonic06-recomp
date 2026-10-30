@@ -1,0 +1,261 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: DrummingBird1 <1979036+DrummingBird1@users.noreply.github.com>
+Date: Fri, 30 Oct 2026 16:11:40 +0200
+Subject: [PATCH] cellAtrac: streaming (GetStreamDataInfo, AddStreamData,
+ second buffer)
+
+A title that does not fit an .at3 file in its buffer hands over the head
+and feeds the rest through GetStreamDataInfo / AddStreamData. Keep a
+host copy of the whole file and copy each chunk in as it is added; the
+title's buffer is only a staging area, so every write goes to its start
+and the decoder reads the host copy. A frame that has not arrived is
+CELL_ATRAC_ERROR_NODATA_IN_BUFFER, and the remaining-frame count reports
+how far the data runs ahead of the decoder. Loops never need data
+re-read, so no second buffer is needed. Sonic the Hedgehog streams its
+menu music this way and decoded garbage past the first 128 KB before.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ libs/codec/cellAtrac.c | 137 +++++++++++++++++++++++++++++++++++------
+ libs/codec/cellAtrac.h |   9 +++
+ 2 files changed, 127 insertions(+), 19 deletions(-)
+
+diff --git a/libs/codec/cellAtrac.c b/libs/codec/cellAtrac.c
+index 61386584..39f7b91d 100644
+--- a/libs/codec/cellAtrac.c
++++ b/libs/codec/cellAtrac.c
+@@ -14,16 +14,25 @@
+  * Game's three tracks: first + fact[0] lands exactly on the last frame
+  * boundary of the data chunk, and each loop spans the whole track.
+  *
+- * ponytail: no streaming (GetStreamDataInfo/AddStreamData/second buffer) and
+- * no plain ATRAC3 -- nothing that runs needs them yet. A title that streams
+- * gets a loud log line from SetDataAndGetMemSize; add the ring-buffer
+- * bookkeeping then (PPSSPP's sceAtrac is the model).
++ * Streaming. A title that does not fit the file in its buffer hands over the
++ * head of it (uiReadByte < the file) and then feeds the rest through
++ * GetStreamDataInfo / AddStreamData. The module keeps a host copy of the
++ * whole file and copies each chunk in as it is added, so the title's buffer
++ * is only a staging area: every write goes to its start, and the decoder reads
++ * the host copy. A frame that has not arrived yet decodes as
++ * CELL_ATRAC_ERROR_NODATA_IN_BUFFER, and the remaining-frame count tells the
++ * title how far ahead of the decoder its data is, which is what it paces its
++ * reads on. Because the copy keeps everything, a loop never needs the data
++ * re-read or a second buffer. Sonic the Hedgehog streams its menu music.
++ *
++ * ponytail: no plain ATRAC3 -- nothing that runs needs it yet.
+  */
+ 
+ #include "cellAtrac.h"
+ #include "../../runtime/ppu/ppu_memory.h"
+ #include "../../third_party/at3_standalone/at3_bridge.h"
+ #include <stdio.h>
++#include <stdlib.h>
+ #include <string.h>
+ 
+ #define AT3P_SAMPLES   2048
+@@ -40,6 +49,10 @@ typedef struct {
+ typedef struct {
+     u32 handle_ea;             /* 0 = free */
+     const u8* file;
++    u8* stream;                /* host copy of a streamed file, else NULL */
++    u32 file_bytes;            /* header + data chunk */
++    u32 have;                  /* bytes of the file that have arrived */
++    u32 buf_ea, buf_bytes;     /* the title's staging buffer */
+     AtracTrackInfo t;
+     void* dec;
+     s32 pos;                   /* next decoder-stream index to output */
+@@ -139,6 +152,30 @@ static int decode_frame(AtracSlot* s, s32 k)
+ 
+ static int looping(const AtracSlot* s) { return s->t.loop_start >= 0 && s->loop_num != 0; }
+ 
++/* Frames of the data chunk that have arrived (all of them unless streaming). */
++static s32 frames_on_memory(const AtracSlot* s)
++{
++    const u32 have = s->stream ? s->have : s->t.data_off + s->t.data_bytes;
++    return have <= s->t.data_off ? 0 : (s32)((have - s->t.data_off) / s->t.block_align);
++}
++
++/* The remaining-frame count Decode and GetRemainFrame report: frames on
++ * memory past the decoder, or ALLDATA_IS_ON_MEMORY once nothing more is
++ * coming. */
++static s32 remain_frames(const AtracSlot* s)
++{
++    if (!s->stream || s->have >= s->file_bytes) return CELL_ATRAC_ALLDATA_IS_ON_MEMORY;
++    const s32 r = frames_on_memory(s) - s->pos / AT3P_SAMPLES;
++    return r > 0 ? r : 0;
++}
++
++static void slot_release(AtracSlot* s)
++{
++    if (s->dec) at3p_close(s->dec);
++    free(s->stream);
++    memset(s, 0, sizeof(*s));
++}
++
+ s32 cellAtracSetDataAndGetMemSize(u32 pHandle, u32 pucBufferAddr, u32 uiReadByte,
+                                   u32 uiBufferByte, u32 puiWorkMemByte)
+ {
+@@ -153,23 +190,30 @@ s32 cellAtracSetDataAndGetMemSize(u32 pHandle, u32 pucBufferAddr, u32 uiReadByte
+         fprintf(stderr, "[cellAtrac] SetData: not an ATRAC3plus file (0x%08X)\n", (u32)rc);
+         return rc;
+     }
+-    if (uiReadByte < t.data_off + t.data_bytes)
+-        fprintf(stderr, "[cellAtrac] SetData: %u of %u bytes on memory -- STREAMING is "
+-                        "not implemented; this track will decode garbage\n",
+-                uiReadByte, t.data_off + t.data_bytes);
+-    if (s->dec) at3p_close(s->dec);
+-    memset(s, 0, sizeof(*s));
++    if (uiReadByte > uiBufferByte) return (s32)CELL_ATRAC_ERROR_READSIZE_OVER_BUFFER;
++    const u32 file_bytes = t.data_off + t.data_bytes;
++    u8* stream = NULL;
++    if (uiReadByte < file_bytes) {
++        stream = (u8*)malloc(file_bytes);
++        if (!stream) return (s32)CELL_ATRAC_ERROR_API_FAIL;
++        memcpy(stream, file, uiReadByte);
++    }
++    slot_release(s);
+     s->handle_ea = pHandle;
+-    s->file = file;
++    s->file = stream ? stream : file;
++    s->stream = stream;
++    s->file_bytes = file_bytes;
++    s->have = stream ? uiReadByte : file_bytes;
++    s->buf_ea = pucBufferAddr;
++    s->buf_bytes = uiBufferByte;
+     s->t = t;
+     s->pos = t.first;
+     s->next_frame = 0;         /* start of the stream, like the console */
+     s->pcm_frame = -1;
+-    (void)uiBufferByte;
+     if (puiWorkMemByte) vm_write32(puiWorkMemByte, 0x1000);
+-    fprintf(stderr, "[cellAtrac] SetData handle=0x%08X ch=%u frames=%u first=%d end=%d loop=[%d,%d)\n",
++    fprintf(stderr, "[cellAtrac] SetData handle=0x%08X ch=%u frames=%u first=%d end=%d loop=[%d,%d)%s\n",
+             pHandle, t.channels, t.data_bytes / t.block_align, t.first, t.end,
+-            t.loop_start, t.loop_end);
++            t.loop_start, t.loop_end, stream ? " streamed" : "");
+     return CELL_OK;
+ }
+ 
+@@ -196,8 +240,7 @@ s32 cellAtracDeleteDecoder(u32 pHandle)
+ {
+     AtracSlot* s = slot_of(pHandle);
+     if (!s) return (s32)CELL_ATRAC_ERROR_UNSET_DATA;
+-    if (s->dec) at3p_close(s->dec);
+-    memset(s, 0, sizeof(*s));
++    slot_release(s);
+     return CELL_OK;
+ }
+ 
+@@ -222,6 +265,10 @@ s32 cellAtracDecode(u32 pHandle, u32 pfOutAddr, u32 puiSamples, u32 puiFinishfla
+     const s32 k = s->pos / AT3P_SAMPLES, at = s->pos - k * AT3P_SAMPLES;
+     s32 n = AT3P_SAMPLES - at;
+     if (n > limit - s->pos) n = limit - s->pos;
++    if (k >= frames_on_memory(s)) {   /* streamed, and the title is behind */
++        if (piRemainFrame) vm_write32(piRemainFrame, 0);
++        return (s32)CELL_ATRAC_ERROR_NODATA_IN_BUFFER;
++    }
+     decode_frame(s, k);
+     const u32 ch = s->t.channels;
+     for (s32 i = 0; i < n; i++)
+@@ -233,17 +280,69 @@ s32 cellAtracDecode(u32 pHandle, u32 pfOutAddr, u32 puiSamples, u32 puiFinishfla
+     s->pos += n;
+     if (puiSamples) vm_write32(puiSamples, (u32)n);
+     if (puiFinishflag) vm_write32(puiFinishflag, !looping(s) && s->pos >= s->t.end);
+-    if (piRemainFrame) vm_write32(piRemainFrame, (u32)CELL_ATRAC_ALLDATA_IS_ON_MEMORY);
++    if (piRemainFrame) vm_write32(piRemainFrame, (u32)remain_frames(s));
+     return CELL_OK;
+ }
+ 
+ s32 cellAtracGetRemainFrame(u32 pHandle, u32 piRemainFrame)
+ {
+-    if (!slot_of(pHandle)) return (s32)CELL_ATRAC_ERROR_UNSET_DATA;
+-    vm_write32(piRemainFrame, (u32)CELL_ATRAC_ALLDATA_IS_ON_MEMORY);
++    AtracSlot* s = slot_of(pHandle);
++    if (!s) return (s32)CELL_ATRAC_ERROR_UNSET_DATA;
++    vm_write32(piRemainFrame, (u32)remain_frames(s));
++    return CELL_OK;
++}
++
++/* Where the title should put the next chunk of a streamed file, how much of it
++ * fits, and the file offset to read it from. Always the start of its buffer:
++ * AddStreamData copies a chunk out as soon as it is added. */
++s32 cellAtracGetStreamDataInfo(u32 pHandle, u32 ppucWritePointer, u32 puiWritableByte,
++                               u32 puiReadPosition)
++{
++    AtracSlot* s = slot_of(pHandle);
++    if (!s) return (s32)CELL_ATRAC_ERROR_UNSET_DATA;
++    if (!s->stream) return (s32)CELL_ATRAC_ERROR_ALLDATA_IS_ONMEMORY;
++    const u32 left = s->file_bytes - s->have;
++    if (ppucWritePointer) vm_write32(ppucWritePointer, s->buf_ea);
++    if (puiWritableByte) vm_write32(puiWritableByte, left < s->buf_bytes ? left : s->buf_bytes);
++    if (puiReadPosition) vm_write32(puiReadPosition, s->have);
++    return CELL_OK;
++}
++
++/* The title wrote uiAddByte bytes at the pointer GetStreamDataInfo gave. */
++s32 cellAtracAddStreamData(u32 pHandle, u32 uiAddByte)
++{
++    AtracSlot* s = slot_of(pHandle);
++    if (!s) return (s32)CELL_ATRAC_ERROR_UNSET_DATA;
++    if (!s->stream) return (s32)CELL_ATRAC_ERROR_ALLDATA_IS_ONMEMORY;
++    const u32 left = s->file_bytes - s->have;
++    if (uiAddByte > left || uiAddByte > s->buf_bytes)
++        return (s32)CELL_ATRAC_ERROR_ADD_DATA_IS_TOO_BIG;
++    memcpy(s->stream + s->have, vm_base + s->buf_ea, uiAddByte);
++    s->have += uiAddByte;
+     return CELL_OK;
+ }
+ 
++/* The whole file stays on memory, so loops never need a second buffer. */
++s32 cellAtracIsSecondBufferNeeded(u32 pHandle)
++{
++    return slot_of(pHandle) ? 0 : (s32)CELL_ATRAC_ERROR_UNSET_DATA;
++}
++
++s32 cellAtracGetSecondBufferInfo(u32 pHandle, u32 puiReadPosition, u32 puiDataByte)
++{
++    if (!slot_of(pHandle)) return (s32)CELL_ATRAC_ERROR_UNSET_DATA;
++    if (puiReadPosition) vm_write32(puiReadPosition, 0);
++    if (puiDataByte) vm_write32(puiDataByte, 0);
++    return (s32)CELL_ATRAC_ERROR_NONEED_SECOND_BUFFER;
++}
++
++s32 cellAtracSetSecondBuffer(u32 pHandle, u32 pucSecondBufferAddr, u32 uiSecondBufferByte)
++{
++    (void)pucSecondBufferAddr; (void)uiSecondBufferByte;
++    if (!slot_of(pHandle)) return (s32)CELL_ATRAC_ERROR_UNSET_DATA;
++    return (s32)CELL_ATRAC_ERROR_NONEED_SECOND_BUFFER;
++}
++
+ s32 cellAtracGetChannel(u32 pHandle, u32 puiChannel)
+ {
+     AtracSlot* s = slot_of(pHandle);
+diff --git a/libs/codec/cellAtrac.h b/libs/codec/cellAtrac.h
+index 3a473ebf..b6b12d2d 100644
+--- a/libs/codec/cellAtrac.h
++++ b/libs/codec/cellAtrac.h
+@@ -27,7 +27,10 @@ extern "C" {
+ #define CELL_ATRAC_ERROR_UNSET_DATA            0x80610322
+ #define CELL_ATRAC_ERROR_DECODER_WAS_CREATED   0x80610323
+ #define CELL_ATRAC_ERROR_ALLDATA_WAS_DECODED   0x80610331
++#define CELL_ATRAC_ERROR_NODATA_IN_BUFFER      0x80610332
+ #define CELL_ATRAC_ERROR_ALLDATA_IS_ONMEMORY   0x80610341
++#define CELL_ATRAC_ERROR_ADD_DATA_IS_TOO_BIG   0x80610342
++#define CELL_ATRAC_ERROR_NONEED_SECOND_BUFFER  0x80610351
+ #define CELL_ATRAC_ERROR_UNSET_LOOP_NUM        0x80610361
+ #define CELL_ATRAC_ERROR_ILLEGAL_SAMPLE        0x80610371
+ 
+@@ -53,6 +56,12 @@ s32 cellAtracGetBitrate(u32 pHandle, u32 puiBitrate);
+ s32 cellAtracGetLoopInfo(u32 pHandle, u32 piLoopNum, u32 puiLoopStatus);
+ s32 cellAtracSetLoopNum(u32 pHandle, s32 iLoopNum);
+ s32 cellAtracResetPlayPosition(u32 pHandle, u32 uiSample, u32 uiWriteByte);
++s32 cellAtracGetStreamDataInfo(u32 pHandle, u32 ppucWritePointer, u32 puiWritableByte,
++                               u32 puiReadPosition);
++s32 cellAtracAddStreamData(u32 pHandle, u32 uiAddByte);
++s32 cellAtracIsSecondBufferNeeded(u32 pHandle);
++s32 cellAtracGetSecondBufferInfo(u32 pHandle, u32 puiReadPosition, u32 puiDataByte);
++s32 cellAtracSetSecondBuffer(u32 pHandle, u32 pucSecondBufferAddr, u32 uiSecondBufferByte);
+ 
+ #ifdef __cplusplus
+ }

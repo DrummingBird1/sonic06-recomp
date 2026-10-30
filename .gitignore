@@ -6,6 +6,8 @@ out/
 recompiled/
 # Shader cache the runtime writes next to the working directory.
 scratch/
+# The emulated HDD the runtime keeps the title's save data on.
+gamedata/
 
 # --- <local> shared ignore block (init-project.ps1) ---
 node_modules/
