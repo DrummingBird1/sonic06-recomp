@@ -34,4 +34,12 @@ static void sonic06_config(void)
      * needed). Every movie frame here is 1280x720, so the SEGA logo and the
      * title-screen background showed the black frame instead of the movie. */
     set_default("SCREEN_AS_TEX", "0");
+
+    /* SPU reads of the inbound mailbox and the signal-notification channels
+     * return at once with 0 unless this is set; on hardware they wait for the
+     * PPU. The FrustumCullingTask jobs wait for their commands on SNR1, so
+     * without it they ran "command 0" at start-up, polled EA 0 until the
+     * runtime halted them, and the main menu then waited for their reply
+     * forever. */
+    set_default("SPU_CH_BLOCK", "1");
 }
