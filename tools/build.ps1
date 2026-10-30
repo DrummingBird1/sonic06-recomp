@@ -18,6 +18,11 @@ $vcvars = Join-Path $vs 'VC\Auxiliary\Build\vcvars64.bat'
 $ninjaDir = Join-Path $vs 'Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja'
 $llvm = 'C:\Program Files\LLVM\bin'
 $py = Join-Path $root '.venv\Scripts\python.exe'
+$ps3recomp = Join-Path $root 'work\ps3recomp'
+if (-not (Test-Path $ps3recomp)) {
+  & (Join-Path $PSScriptRoot 'setup_ps3recomp.ps1')
+  if ($LASTEXITCODE) { exit $LASTEXITCODE }
+}
 
 $steps = @()
 $ffmpeg = ''
@@ -25,7 +30,7 @@ if ($FFmpegInclude) {
   $ffmpeg = " -DPS3RECOMP_FFMPEG_RUNTIME=ON -DPS3RECOMP_FFMPEG_INCLUDE_DIR=`"$FFmpegInclude`""
 }
 if ($Reconfigure -or $FFmpegInclude -or -not (Test-Path (Join-Path $build 'build.ninja'))) {
-  $steps += "cmake -S `"$root`" -B `"$build`" -G Ninja -DCMAKE_BUILD_TYPE=$Config -DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl -DPython3_EXECUTABLE=`"$py`"$ffmpeg"
+  $steps += "cmake -S `"$root`" -B `"$build`" -G Ninja -DCMAKE_BUILD_TYPE=$Config -DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl -DPython3_EXECUTABLE=`"$py`" -DPS3RECOMP_DIR=`"$ps3recomp`"$ffmpeg"
 }
 $steps += "cmake --build `"$build`" -j $Jobs"
 $cmd = "`"$vcvars`" >nul 2>&1 && set `"PATH=$llvm;$ninjaDir;%PATH%`" && " + ($steps -join ' && ')

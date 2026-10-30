@@ -1,0 +1,86 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: DrummingBird1 <1979036+DrummingBird1@users.noreply.github.com>
+Date: Fri, 30 Oct 2026 09:26:34 +0200
+Subject: [PATCH] d3d12: honour the viewport transform's x/y
+
+The RSX rasterizes at window = ndc * viewport_scale + viewport_offset,
+counted from the top-left corner regardless of SET_SHADER_WINDOW's
+origin. The VS epilogue used identity for x/y, which matches only
+libgcm's own cellGcmSetViewport (scale.y = -h/2). Sonic the Hedgehog
+programs scale.y > 0, so every draw came out upside down. Map the RSX
+window position into the D3D12 viewport rectangle render_frame binds.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ libs/video/rsx_d3d12_backend.c | 46 ++++++++++++++++++++++++++++++++--
+ 1 file changed, 44 insertions(+), 2 deletions(-)
+
+diff --git a/libs/video/rsx_d3d12_backend.c b/libs/video/rsx_d3d12_backend.c
+index bc05a308..930061e9 100644
+--- a/libs/video/rsx_d3d12_backend.c
++++ b/libs/video/rsx_d3d12_backend.c
+@@ -3476,6 +3476,31 @@ static int vp_upload_tex_slot(u32 off, u32 w, u32 h, u32 fmt, int cube, u32 mips
+ /* Snapshot the VP constant bank + viewport epilogue for one draw into its
+  * vp_cb slot. Runs at record time so every draw keeps the constants that
+  * were live when the guest issued it. */
++/* The D3D12 viewport render_frame will bind for this draw: the guest's
++ * viewport rectangle when it fits the target, else the whole target. The
++ * target is the offscreen surface, the depth surface of a colourless pass, or
++ * the backbuffer -- the same choice render_frame makes from the bound
++ * resources, made here from the state they were created from. */
++static void draw_viewport_rect(const D3D12DrawRecord* dr, const rsx_state* st,
++                               float* x, float* y, float* w, float* h)
++{
++    float tw = (float)s_d3d.width, th = (float)s_d3d.height;
++    if (dr->no_color && st->surface_clip_w && st->surface_clip_h) {
++        tw = (float)st->surface_clip_w;
++        th = (float)st->surface_clip_h;
++    } else if (dr->rt_off && dr->rt_w && dr->rt_h) {
++        tw = (float)dr->rt_w;
++        th = (float)dr->rt_h;
++    }
++    *x = 0.0f; *y = 0.0f; *w = tw; *h = th;
++    if (dr->vp_w >= 2 && dr->vp_h >= 2 &&
++        (float)(dr->vp_x + dr->vp_w) <= tw + 0.5f &&
++        (float)(dr->vp_y + dr->vp_h) <= th + 0.5f) {
++        *x = (float)dr->vp_x; *y = (float)dr->vp_y;
++        *w = (float)dr->vp_w; *h = (float)dr->vp_h;
++    }
++}
++
+ static void vp_record_cb(u32 slot, int vs_idx, const D3D12DrawRecord* dr)
+ {
+     const rsx_state* st = s_d3d.current_rsx_state;
+@@ -3584,13 +3609,30 @@ static void vp_record_cb(u32 slot, int vs_idx, const D3D12DrawRecord* dr)
+                       c[r*4+0], c[r*4+1], c[r*4+2], c[r*4+3], 10);
+       } }
+ 
+-    /* Viewport epilogue (see the render_frame notes this logic came from):
+-     * x/y identity, z lane remaps GL clip z when the guest programs one. */
++    /* Viewport epilogue (see the render_frame notes this logic came from).
++     * The z lane remaps GL clip z when the guest programs one.
++     *
++     * x/y: the RSX rasterizes at window = ndc * viewport_scale + viewport_offset,
++     * in window coordinates counted from the top-left corner whatever
++     * SET_SHADER_WINDOW's origin says -- that only changes WPOS (RPCS3 draws the
++     * same conclusion; see its front_face note in GL/GLDraw.cpp). D3D12 maps NDC
++     * into the viewport rectangle render_frame binds, +y at its top. Mapping one
++     * onto the other lands each vertex where the RSX puts it. libgcm's own
++     * cellGcmSetViewport (scale.y = -h/2, offset centred on the rectangle)
++     * reduces to identity; a title that programs scale.y > 0 (Sonic the
++     * Hedgehog does) was drawn upside down. A guest that never programs the
++     * transform keeps identity. */
+     float* vpx = (float*)(dst + RSX_MAX_VERTEX_CONSTANTS * 16);
+     const float* vs_ = st->viewport_scale;
+     const float* vo_ = st->viewport_offset;
+     vpx[0] = vpx[1] = vpx[3] = 1.0f;
+     vpx[4] = vpx[5] = vpx[7] = 0.0f;
++    if (dr && vs_[0] != 0.0f && vs_[1] != 0.0f) {
++        float rx, ry, rw, rh;
++        draw_viewport_rect(dr, st, &rx, &ry, &rw, &rh);
++        vpx[0] = 2.0f * vs_[0] / rw;  vpx[4] = 2.0f * (vo_[0] - rx) / rw - 1.0f;
++        vpx[1] = -2.0f * vs_[1] / rh; vpx[5] = 1.0f - 2.0f * (vo_[1] - ry) / rh;
++    }
+     if (vs_[2] != 0.0f) { vpx[2] = vs_[2]; vpx[6] = vo_[2]; }
+     else                { vpx[2] = 1.0f;   vpx[6] = 0.0f;   }
+     /* DBG_ZOOM=<k> with DBG_CENTER="cx,cy": a debug camera applied in CLIP space,

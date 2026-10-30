@@ -21,12 +21,16 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-set(PS3RECOMP_DIR "<local>/shared/toolchains/ps3recomp" CACHE PATH "ps3recomp checkout")
+# The project's patched copy of the toolkit (tools/setup_ps3recomp.ps1).
+set(PS3RECOMP_DIR "${CMAKE_CURRENT_SOURCE_DIR}/work/ps3recomp" CACHE PATH "ps3recomp checkout")
 set(RECOMP_DIR "${CMAKE_CURRENT_SOURCE_DIR}/work/recompiled" CACHE PATH
     "Lifter output: ppu_recomp.h and the lifted sources")
 get_filename_component(PS3RECOMP_DIR "${PS3RECOMP_DIR}" ABSOLUTE)
 get_filename_component(RECOMP_DIR "${RECOMP_DIR}" ABSOLUTE)
 
+if(NOT EXISTS "${PS3RECOMP_DIR}/CMakeLists.txt")
+    message(FATAL_ERROR "No ps3recomp in ${PS3RECOMP_DIR}. Run tools/setup_ps3recomp.ps1 first.")
+endif()
 if(NOT EXISTS "${RECOMP_DIR}/ppu_recomp.h")
     message(FATAL_ERROR "No ppu_recomp.h in ${RECOMP_DIR}. Run tools/relift.ps1 first.")
 endif()

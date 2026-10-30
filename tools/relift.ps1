@@ -2,10 +2,14 @@
 # the loader tables, the import list and the lifted PPU code.
 # Run from anywhere; paths are relative to the repo root.
 param(
-  [string]$Ps3Recomp = '<local>/shared\toolchains\ps3recomp'
+  [string]$Ps3Recomp = ''   # default: the project's patched copy (setup_ps3recomp.ps1)
 )
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
+if (-not $Ps3Recomp) {
+  $Ps3Recomp = Join-Path $root 'work\ps3recomp'
+  if (-not (Test-Path $Ps3Recomp)) { & (Join-Path $PSScriptRoot 'setup_ps3recomp.ps1') }
+}
 $py = Join-Path $root '.venv\Scripts\python.exe'
 $tools = Join-Path $Ps3Recomp 'tools'
 $elf = Join-Path $root 'game\EBOOT.elf'
