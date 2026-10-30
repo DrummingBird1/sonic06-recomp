@@ -3,7 +3,8 @@
  * register. Each is checked against the SDK headers and RPCS3's module of the
  * same name. They register from a constructor: the context table in
  * ppu_hle.cpp is plain static storage, so it is ready before main runs, and
- * none of these NIDs has another handler to compete with.
+ * context handlers are dispatched before ps3recomp's generic table, so the
+ * cellResc wrappers below take precedence over the functions they wrap.
  */
 #include "ppu_memory.h"   /* ppu_context and the big-endian vm_read/vm_write helpers */
 #include <stdint.h>
@@ -47,6 +48,85 @@ static void hle_cellRescGcmSurface2RescSrc(ppu_context* ctx)
     ret(ctx, CELL_OK);
 }
 
+/* Presenting through cellResc. The title renders each frame into a resc
+ * source surface (cellRescSetSrc) and asks resc to scale it into a display
+ * buffer and flip. ps3recomp's resc never registers display buffers, so its
+ * convert-and-flip found none and never flipped, and nothing would copy the
+ * source anyway: the D3D12 backend keeps that surface as a GPU render target
+ * (stored upside down relative to the screen, so a plain copy of it shows the
+ * frame flipped).
+ *
+ * These wrappers register resc's destination buffers with GCM the way libresc
+ * does, so convert-and-flip flips, and also register each source surface as a
+ * display buffer. The backend then draws the title's final pass straight into
+ * the backbuffer, the right way up, which is what resc's 1:1 scale would have
+ * produced (720p source and output). The wrapped ps3recomp calls keep their
+ * own state and logging. Pointer arguments to them are guest addresses, as
+ * the HLE dispatcher passes them. */
+int32_t cellRescSetSrc(int32_t index, const void* src);
+int32_t cellRescSetDsts(uint32_t displayMode, const void* dsts);
+int32_t cellRescSetBufferAddress(const void* colorBuf, const void* vertexBuf, const void* fragmentBuf);
+int32_t cellGcmSetDisplayBuffer(uint32_t id, uint32_t offset, uint32_t pitch, uint32_t width, uint32_t height);
+int32_t cellGcmAddressToOffset(uint32_t address, uint32_t* offset);
+
+#define RESC_SRC_MAX 4
+#define RESC_DST_BUFFERS 2   /* cellRescGetNumColorBuffers outside the PAL modes */
+
+static uint32_t s_resc_mode, s_resc_pitch, s_resc_height_align;
+
+/* cellRescSetSrc(s32 index, const CellRescSrc*): CellRescSrc is format @0,
+ * pitch @4, width @8, height @10, offset @12. Source i becomes display buffer
+ * RESC_DST_BUFFERS + i. */
+static void hle_cellRescSetSrc(ppu_context* ctx)
+{
+    int32_t index = (int32_t)ctx->gpr[3];
+    uint32_t src = (uint32_t)ctx->gpr[4];
+    if (src && index >= 0 && index < RESC_SRC_MAX)
+        cellGcmSetDisplayBuffer(RESC_DST_BUFFERS + (uint32_t)index, vm_read32(src + 12),
+                                vm_read32(src + 4), vm_read16(src + 8), vm_read16(src + 10));
+    ret(ctx, (uint32_t)cellRescSetSrc(index, (const void*)(uintptr_t)src));
+}
+
+/* cellRescSetDsts(u32 displayMode, const CellRescDsts*): format, pitch,
+ * heightAlign of the destination buffers for that mode. */
+static void hle_cellRescSetDsts(ppu_context* ctx)
+{
+    uint32_t mode = (uint32_t)ctx->gpr[3], dsts = (uint32_t)ctx->gpr[4];
+    if (dsts) {
+        s_resc_mode = mode;
+        s_resc_pitch = vm_read32(dsts + 4);
+        s_resc_height_align = vm_read32(dsts + 8);
+    }
+    ret(ctx, (uint32_t)cellRescSetDsts(mode, (const void*)(uintptr_t)dsts));
+}
+
+/* cellRescSetBufferAddress(void* colorBuf, void* vertexBuf, void* fragmentBuf):
+ * the destination buffers sit back to back in colorBuf (RSX local memory). */
+static void hle_cellRescSetBufferAddress(ppu_context* ctx)
+{
+    uint32_t color = (uint32_t)ctx->gpr[3];
+    uint32_t w = 1280, h = 720;
+    switch (s_resc_mode) {
+    case 0x1: w = 720;  h = 480;  break;
+    case 0x2: w = 720;  h = 576;  break;
+    case 0x8: w = 1920; h = 1080; break;
+    }
+    uint32_t pitch = s_resc_pitch ? s_resc_pitch : w * 4;
+    uint32_t align = s_resc_height_align ? s_resc_height_align : 1;
+    uint32_t size = pitch * ((h + align - 1) / align * align);
+    /* AddressToOffset writes through a guest pointer: use the red zone below
+     * the caller's stack pointer, which a leaf callee may clobber. */
+    uint32_t scratch = (uint32_t)ctx->gpr[1] - 16;
+    if (color && cellGcmAddressToOffset(color, (uint32_t*)(uintptr_t)scratch) == 0) {
+        uint32_t offset = vm_read32(scratch);
+        for (uint32_t i = 0; i < RESC_DST_BUFFERS; i++)
+            cellGcmSetDisplayBuffer(i, offset + i * size, pitch, w, h);
+    }
+    ret(ctx, (uint32_t)cellRescSetBufferAddress((const void*)(uintptr_t)color,
+                                                (const void*)(uintptr_t)(uint32_t)ctx->gpr[4],
+                                                (const void*)(uintptr_t)(uint32_t)ctx->gpr[5]));
+}
+
 /* cellRescSetWaitFlip(CellGcmContextData*): would put a wait-for-flip into
  * the command buffer. The runtime's flip is synchronous, so there is nothing
  * to wait on; RPCS3 also returns OK. */
@@ -75,55 +155,15 @@ static void hle_cellRescVideoOutResolutionId2RescBufferMode(ppu_context* ctx)
     ret(ctx, CELL_OK);
 }
 
-/* PAMF movie headers (HD_SEGA.pam, title_loop_GBn.pam, the event movies).
- * PamfHeader: magic "PAMF" @0, version @4, header_size @8 and data_size @12,
- * both big-endian counts of 0x800-byte sectors. Same checks as RPCS3's
- * pamfGetHeaderAndDataSize; the SDK error codes are RPCS3's (cellPamf.h). */
-#define CELL_PAMF_ERROR_INVALID_PAMF  0x80610502u
-#define CELL_PAMF_ERROR_UNKNOWN_TYPE  0x80610504u
-
-static uint32_t pamf_sizes(uint32_t hdr, uint64_t file_size, uint64_t* header, uint64_t* data)
-{
-    if (vm_read32(hdr) != 0x50414D46u)   /* "PAMF" */
-        return CELL_PAMF_ERROR_UNKNOWN_TYPE;
-    *header = (uint64_t)vm_read32(hdr + 8) * 0x800u;
-    *data = (uint64_t)vm_read32(hdr + 12) * 0x800u;
-    if (*header == 0 || (file_size != 0 && *header + *data != file_size))
-        return CELL_PAMF_ERROR_INVALID_PAMF;
-    return CELL_OK;
-}
-
-/* cellPamfGetHeaderSize(const PamfHeader*, u64 fileSize, u64* headerSize) */
-static void hle_cellPamfGetHeaderSize(ppu_context* ctx)
-{
-    uint64_t header, data;
-    uint32_t rc = pamf_sizes((uint32_t)ctx->gpr[3], ctx->gpr[4], &header, &data);
-    if (rc == CELL_OK && (uint32_t)ctx->gpr[5])
-        vm_write64((uint32_t)ctx->gpr[5], header);
-    ret(ctx, rc);
-}
-
-/* cellPamfGetStreamOffsetAndSize(const PamfHeader*, u64 fileSize, u64* offset,
- * u64* size): the elementary streams start right after the header. */
-static void hle_cellPamfGetStreamOffsetAndSize(ppu_context* ctx)
-{
-    uint64_t header, data;
-    uint32_t rc = pamf_sizes((uint32_t)ctx->gpr[3], ctx->gpr[4], &header, &data);
-    if (rc == CELL_OK) {
-        if ((uint32_t)ctx->gpr[5]) vm_write64((uint32_t)ctx->gpr[5], header);
-        if ((uint32_t)ctx->gpr[6]) vm_write64((uint32_t)ctx->gpr[6], data);
-    }
-    ret(ctx, rc);
-}
-
 __attribute__((constructor))
 static void sonic06_hle_register(void)
 {
-    ps3_hle_register_ctx(0xCA8181C1u, "cellPamfGetHeaderSize", hle_cellPamfGetHeaderSize);
-    ps3_hle_register_ctx(0x44F5C9E3u, "cellPamfGetStreamOffsetAndSize", hle_cellPamfGetStreamOffsetAndSize);
     ps3_hle_register_ctx(0x3A33C1FDu, "_cellGcmFunc15", hle_cellGcmFunc15);
     ps3_hle_register_ctx(0x01220224u, "cellRescGcmSurface2RescSrc", hle_cellRescGcmSurface2RescSrc);
     ps3_hle_register_ctx(0x0D3C22CEu, "cellRescSetWaitFlip", hle_cellRescSetWaitFlip);
+    ps3_hle_register_ctx(0x6CD0F95Fu, "cellRescSetSrc", hle_cellRescSetSrc);
+    ps3_hle_register_ctx(0x10DB5B1Au, "cellRescSetDsts", hle_cellRescSetDsts);
+    ps3_hle_register_ctx(0x8107277Cu, "cellRescSetBufferAddress", hle_cellRescSetBufferAddress);
     ps3_hle_register_ctx(0xD1CA0503u, "cellRescVideoOutResolutionId2RescBufferMode",
                          hle_cellRescVideoOutResolutionId2RescBufferMode);
 }

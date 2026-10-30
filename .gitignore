@@ -4,6 +4,8 @@ game/
 work/
 out/
 recompiled/
+# Shader cache the runtime writes next to the working directory.
+scratch/
 
 # --- <local> shared ignore block (init-project.ps1) ---
 node_modules/
