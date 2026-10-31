@@ -69,3 +69,6 @@ Thumbs.db
 *.gguf
 *.ckpt
 # --- end shared block ---
+
+# Temporary trace hooks (tools/re/hook.py): never commit.
+src/zz_*
