@@ -39,7 +39,15 @@ static void sonic06_config(void)
      * return at once with 0 unless this is set; on hardware they wait for the
      * PPU. The FrustumCullingTask jobs wait for their commands on SNR1, so
      * without it they ran "command 0" at start-up, polled EA 0 until the
-     * runtime halted them, and the main menu then waited for their reply
+     * runtime halted them, and the game then waited for their reply
      * forever. */
     set_default("SPU_CH_BLOCK", "1");
+
+    /* The frame loop waits on a semaphore that the flip handler posts, and
+     * runs one fixed 1/60 s step per frame. cellGcm also calls the flip handler
+     * when a flip is requested, so the semaphore was always open and the game
+     * ran at the host's frame rate: thousands of steps a second, and the title
+     * screen's 30 s idle timer ran out before START could be pressed. With this
+     * the handler only runs when the flip completes on the 60 Hz beat. */
+    set_default("GCM_FLIPCB_ONTICK", "1");
 }

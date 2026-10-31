@@ -1,0 +1,67 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: DrummingBird1 <1979036+DrummingBird1@users.noreply.github.com>
+Date: Fri, 30 Oct 2026 18:30:30 +0200
+Subject: [PATCH] cellGcm: last flip time in microseconds, stamped when the
+ flip is shown
+
+cellGcmGetLastFlipTime returned the nanosecond timestamp unscaled and took
+it when the flip was requested. The SDK value is in microseconds and marks
+the flip that was displayed. Sonic the Hedgehog sleeps until 15 ms have
+passed since the last flip, so it never slept.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ libs/video/cellGcmSys.c | 17 ++++++++++++++---
+ 1 file changed, 14 insertions(+), 3 deletions(-)
+
+diff --git a/libs/video/cellGcmSys.c b/libs/video/cellGcmSys.c
+index 298ee7de..d6b47527 100644
+--- a/libs/video/cellGcmSys.c
++++ b/libs/video/cellGcmSys.c
+@@ -806,6 +806,7 @@ void cellGcm_request_tick(void)
+      * (see ppu_gcm_pump). */
+     if (gcm_flip_executed_take()) {
+         FLIP_LOCK(); s_flip_tick_seq = s_flip_req_seq; FLIP_UNLOCK();
++        s_last_flip_time = get_timestamp_ns();   /* shown now; see cellGcmTickFlip */
+         GCM_PENDING_SET(3);
+     } else {
+         GCM_PENDING_SET(1);
+@@ -903,7 +904,11 @@ void cellGcmTickFlip(void)
+     const int waiting = s_flip_status == CELL_GCM_FLIP_STATUS_WAITING && gcm_flip_executed_take();
+     if (waiting) s_flip_tick_seq = s_flip_req_seq;
+     FLIP_UNLOCK();
+-    if (waiting) GCM_PENDING_SET(2);
++    /* cellGcmGetLastFlipTime reports when a flip was shown, as the hardware
++     * does, not when it was asked for. A title that paces itself on it --
++     * Sonic the Hedgehog sleeps until 15 ms have passed since the last flip --
++     * otherwise measures its own request rate and runs ahead of the display. */
++    if (waiting) { s_last_flip_time = get_timestamp_ns(); GCM_PENDING_SET(2); }
+ }
+ 
+ /* Drain the game's GCM FIFO into the RSX backend. Called from the present thread
+@@ -3113,7 +3118,8 @@ static s32 gcm_flip_request(u32 bufferId, int in_fifo)
+     s_flip_status = CELL_GCM_FLIP_STATUS_WAITING;
+     s_flip_req_seq++;
+     FLIP_UNLOCK();
+-    s_last_flip_time = get_timestamp_ns();
++    /* s_last_flip_time is not stamped here: the flip has only been requested.
++     * cellGcmTickFlip stamps it when the flip completes on the vblank beat. */
+     if (PS3_FT_ON()) { const uint64_t t = ps3_ft_now();
+                        ps3_ft_span(PS3_FT_FLIP_REQ, 0, bufferId, (uint32_t)in_fifo, t, t); }
+ 
+@@ -3286,9 +3292,14 @@ void cellGcmSetUserHandler(CellGcmUserHandler handler)
+ }
+ 
+ /* NID: 0x21AC3697 */
++/* In microseconds, like sys_time_get_system_time (RPCS3 returns the same).
++ * s_last_flip_time is kept in nanoseconds. Handing that over unscaled made
++ * flips look a thousand times further apart than they were: Sonic the Hedgehog
++ * sleeps until 15000 us have passed since the last flip, so it never slept,
++ * and its fixed 1/60 s logic step ran at the host's frame rate. */
+ u64 cellGcmGetLastFlipTime(void)
+ {
+-    return s_last_flip_time;
++    return s_last_flip_time / 1000;
+ }
+ 
+ /* ---------------------------------------------------------------------------

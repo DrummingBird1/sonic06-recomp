@@ -1,0 +1,53 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: DrummingBird1 <1979036+DrummingBird1@users.noreply.github.com>
+Date: Fri, 30 Oct 2026 18:30:30 +0200
+Subject: [PATCH] cellResc: deliver flip and vblank handlers through cellGcm
+
+libresc runs both from the GCM interrupts. Calling the flip handler from
+SetConvertAndFlip reported every flip done the moment it was requested, and
+the vblank handler never ran. Hand both to cellGcm's vblank ticker.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ libs/video/cellResc.c | 21 +++++++++++++++++----
+ 1 file changed, 17 insertions(+), 4 deletions(-)
+
+diff --git a/libs/video/cellResc.c b/libs/video/cellResc.c
+index 14e50eae..d53b810e 100644
+--- a/libs/video/cellResc.c
++++ b/libs/video/cellResc.c
+@@ -215,17 +215,30 @@ s32 cellRescSetConvertAndFlip(s32 index)
+     return CELL_OK;
+ }
+ 
++/* libresc runs both handlers from the GCM interrupts: the flip handler once the
++ * flip it queued is on screen, the vblank handler on each vblank. Keeping them
++ * here and calling the flip handler from SetConvertAndFlip told the title that
++ * every flip had completed the moment it was requested. Sonic the Hedgehog
++ * waits each frame on a semaphore its flip handler posts, so its frame loop
++ * ran unpaced -- hundreds to thousands of fixed 1/60 s steps a second, and the
++ * title screen's 30 s idle timer ran out in half a second. Hand both to
++ * cellGcm, whose vblank ticker delivers them at 60 Hz, the flip handler only
++ * after the flip has gone through the command stream. The local slots stay
++ * empty so nothing here calls them early. */
++extern void cellGcmSetFlipHandler(void (*handler)(u32));
++extern void cellGcmSetVBlankHandler(void (*handler)(u32));
++
+ s32 cellRescSetFlipHandler(void (*handler)(u32))
+ {
+-    s_flip_handler_opd = (u32)(uintptr_t)handler;
+-    printf("[cellResc] SetFlipHandler(opd=0x%08X)\n", s_flip_handler_opd);
++    printf("[cellResc] SetFlipHandler(opd=0x%08X) -> cellGcm\n", (u32)(uintptr_t)handler);
++    cellGcmSetFlipHandler(handler);
+     return CELL_OK;
+ }
+ 
+ s32 cellRescSetVBlankHandler(void (*handler)(u32))
+ {
+-    s_vblank_handler_opd = (u32)(uintptr_t)handler;
+-    printf("[cellResc] SetVBlankHandler(opd=0x%08X)\n", s_vblank_handler_opd);
++    printf("[cellResc] SetVBlankHandler(opd=0x%08X) -> cellGcm\n", (u32)(uintptr_t)handler);
++    cellGcmSetVBlankHandler(handler);
+     return CELL_OK;
+ }
+ 

@@ -58,7 +58,7 @@ file(GLOB PORT_SOURCES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp")
 
 # Lifted SPU programs, generated at configure time from the decrypted EBOOT.
-# Needed past the title screen: the main menu waits on an event from the
+# Needed past the title screen: the main thread waits on an event from the
 # FrustumCullingTask SPU threads, and an image missing from the workload
 # registry is never started.
 option(PORT_ENABLE_SPU "Lift and register the title's SPU programs" ON)

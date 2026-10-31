@@ -1,0 +1,65 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: DrummingBird1 <1979036+DrummingBird1@users.noreply.github.com>
+Date: Fri, 30 Oct 2026 18:30:30 +0200
+Subject: [PATCH] boot harness: 60 Hz vblank on the microsecond clock
+
+A 16 ms step on GetTickCount64 made the vblank 62.5 Hz, so a title paced
+by its flips ran 4% fast. Tick k is now due at t0 + k * 1e6 / 60 us.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ runtime/ppu/tests/boot_main.cpp | 17 +++++++++++------
+ 1 file changed, 11 insertions(+), 6 deletions(-)
+
+diff --git a/runtime/ppu/tests/boot_main.cpp b/runtime/ppu/tests/boot_main.cpp
+index a55afb05..e20ae428 100644
+--- a/runtime/ppu/tests/boot_main.cpp
++++ b/runtime/ppu/tests/boot_main.cpp
+@@ -306,6 +306,7 @@ extern "C" int  rsx_null_backend_pump_messages(void);
+ #endif
+ extern "C" void cellGcm_rsx_process_fifo(void);   /* cellGcmSys.c: drain get->put */
+ extern "C" void cellGcm_fifo_kick_wait(unsigned ms); /* idle wait, woken by a kick */
++extern "C" unsigned long long ps3_qpc_us(void);   /* microsecond QPC clock (cellGcmSys.c) */
+ extern "C" unsigned cellGcm_flip_request_count(void);
+ extern "C" unsigned cellGcmGetCurrentDisplayBufferId(void);
+ extern "C" int sys_event_queue_inject(unsigned int, unsigned long long, unsigned long long, unsigned long long, unsigned long long);
+@@ -484,8 +485,12 @@ static DWORD WINAPI vblank_ticker(LPVOID)
+      * advance at ~60Hz regardless of how long present() blocks. On a hidden/occluded
+      * window DXGI Present throttles hard, which previously stalled these ticks and
+      * paced the game's main loop to ~0.5fps. Drive the ticks off REAL elapsed time
+-     * and catch up in a bounded burst so present latency never slows the game. */
+-    ULONGLONG next_tick = GetTickCount64();
++     * and catch up in a bounded burst so present latency never slows the game.
++     *
++     * Tick k is due at tick_t0 + k * 1e6 / 60 on the microsecond clock. The
++     * old 16 ms step on GetTickCount64 made the vblank 62.5 Hz, and a title
++     * paced by its flips ran 4% fast. */
++    unsigned long long tick_t0 = ps3_qpc_us(), tick_k = 0;
+     for (;;) {
+         /* Was Sleep(4). The FIFO kick event existed, was signalled on a dry
+          * fence queue, and had no waiter -- so a guest starved for `get` or a
+@@ -493,9 +498,9 @@ static DWORD WINAPI vblank_ticker(LPVOID)
+          * ceiling when nothing kicks, and drains on demand when something
+          * does. */
+         cellGcm_fifo_kick_wait(4);
+-        ULONGLONG now = GetTickCount64();
++        unsigned long long now = ps3_qpc_us();
+         int fired = 0;
+-        while ((long long)(now - next_tick) >= 0 && fired < 240) {
++        while (now >= tick_t0 + tick_k * 1000000ull / 60 && fired < 240) {
+             cellGcmTickVBlank();
+             cellGcmTickFlip();
+             /* Present a pending flip BEFORE draining further: the flip fires
+@@ -514,10 +519,10 @@ static DWORD WINAPI vblank_ticker(LPVOID)
+              * Doing it here (not after present) keeps those fences advancing at 60Hz
+              * even when present() throttles on a hidden/occluded window. */
+             if (rsx_ok) cellGcm_rsx_process_fifo();
+-            next_tick += 16;                 /* ~60 Hz */
++            tick_k++;
+             fired++;
+         }
+-        if (fired >= 240) next_tick = now;   /* fell too far behind -> resync */
++        if (fired >= 240) { tick_t0 = now; tick_k = 0; }   /* fell too far behind -> resync */
+         /* Drain at the outer ~4ms cadence too (not just the 16ms tick):
+          * titles fence EVERY render pass on an RSX label the drain writes;
+          * at 16ms per fence wave's six passes paced the guest to ~7 fps.
