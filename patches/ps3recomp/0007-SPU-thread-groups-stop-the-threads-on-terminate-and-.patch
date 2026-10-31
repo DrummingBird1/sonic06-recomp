@@ -1,0 +1,116 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: DrummingBird1 <1979036+DrummingBird1@users.noreply.github.com>
+Date: Sat, 31 Oct 2026 16:44:37 +0200
+Subject: [PATCH] SPU thread groups: stop the threads on terminate and destroy
+
+terminate only marked the group stopped, so join skipped its wait and
+destroy freed each thread's context and local store while the thread was
+still running on them and still listed as a reservation holder. Stop the
+running threads the way a raw SPU's RunCntl = 0 does (stop_request, then
+wake the channel wait) and wait for them. The request is now also honoured
+at channel writes and at stop: CRI's sound thread loops on a mailbox write
+and stop 0x110 and never reads a channel.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ runtime/spu/spu_channels.c      |  5 ++++
+ runtime/syscalls/lv2_register.c | 45 +++++++++++++++++++++++++++++++++
+ 2 files changed, 50 insertions(+)
+
+diff --git a/runtime/spu/spu_channels.c b/runtime/spu/spu_channels.c
+index 5fc50208..ce29884d 100644
+--- a/runtime/spu/spu_channels.c
++++ b/runtime/spu/spu_channels.c
+@@ -233,6 +233,10 @@ void spu_stop(spu_context* ctx)
+      * A/B experiments (it makes the kernel terminate, which the game restarts). */
+     static int s_halt = -1;
+     if (s_halt < 0) s_halt = getenv("YDKJ_STOP_HALT") ? 1 : 0;
++    /* An external stop is honoured here as well as at channel reads: a thread
++     * whose loop only writes its outbound mailbox and stops (CRI's sound
++     * thread in Sonic the Hedgehog, at stop 0x110) never reaches a read. */
++    if (ctx->stop_request) { ctx->status = SPU_STATUS_STOPPED; spu_halt(ctx); }
+     ctx->status = SPU_STATUS_STOPPED_BY_STOP;
+     if (s_halt) spu_halt(ctx);
+ }
+@@ -976,6 +980,7 @@ static int channel_is_mfc(uint32_t ch)
+  * ===========================================================================*/
+ void spu_wrch(spu_context* ctx, uint32_t channel, u128 value)
+ {
++    spu_honour_stop_request(ctx);   /* an external stop, as at a read (see spu_stop) */
+     /* SPU_CHHIST=1: which channels a job actually touches, and how often. A
+      * worker that never issues an MFC command is either not being handed its
+      * work descriptor or is waiting on a channel we never satisfy; the channel
+diff --git a/runtime/syscalls/lv2_register.c b/runtime/syscalls/lv2_register.c
+index 96266731..7ed94d9a 100644
+--- a/runtime/syscalls/lv2_register.c
++++ b/runtime/syscalls/lv2_register.c
+@@ -1230,6 +1230,46 @@ static int64_t sys_spu_thread_group_start_handler(ppu_context* ctx)
+     return 0;
+ }
+ 
++/* Stop a group's running SPU threads and wait until their host threads have
++ * left, as terminate does on hardware. A thread running its lifted image gets
++ * out at its next channel operation once stop_request is set (the raw-SPU
++ * RunCntl = 0 path). terminate used to only mark the group stopped, so join
++ * then skipped its wait and destroy freed the context and local store under a
++ * thread still running on them, and still listed as a reservation holder:
++ * Sonic the Hedgehog terminates and destroys the main menu's group on leaving
++ * it, and crashed in spu_lifted_lookup and spu_coh_notify_write. Fallback
++ * threads have no context to stop and are left to finish. */
++static void spu_group_stop_threads(spu_group_t* g)
++{
++    for (int i = 0; i < 8 && i < (int)g->num_threads; i++) {
++        uint32_t idx = g->thread_indices[i];
++        if (idx >= MAX_SPU_THREADS) continue;
++        spu_thread_t* t = &s_spu_threads[idx];
++        if (!t->in_use || !t->running || !t->sctx) continue;
++        t->sctx->stop_request = 1;
++        spu_ch_wake(t->sctx);
++    }
++    for (int i = 0; i < 8 && i < (int)g->num_threads; i++) {
++        uint32_t idx = g->thread_indices[i];
++        if (idx >= MAX_SPU_THREADS) continue;
++        spu_thread_t* t = &s_spu_threads[idx];
++        if (!t->in_use || !t->running || !t->sctx) continue;
++        for (int ms = 0; ms < 4000 && t->running; ms++) {   /* up to ~4 s */
++#ifdef _WIN32
++            if (t->finish_event && WaitForSingleObject(t->finish_event, 1) == WAIT_OBJECT_0)
++                break;
++#else
++            { struct timespec ts = {0, 1000 * 1000}; nanosleep(&ts, 0); }
++#endif
++            spu_ch_wake(t->sctx);
++        }
++        if (t->running)
++            fprintf(stderr, "[SPU] group 0x%X thread %u did not stop (pc=0x%05X): "
++                            "it is not reaching a channel operation\n",
++                    g->id, (unsigned)t->index, (unsigned)(t->sctx->pc & SPU_LS_MASK));
++    }
++}
++
+ /* sys_spu_thread_group_join(id, *cause, *status) */
+ static int64_t sys_spu_thread_group_join_handler(ppu_context* ctx)
+ {
+@@ -1340,10 +1380,14 @@ static int64_t sys_spu_thread_group_destroy_handler(ppu_context* ctx)
+     }
+     spu_group_t* g = spu_find_group(id);
+     if (g) {
++        spu_group_stop_threads(g);
+         for (int i = 0; i < 8 && i < (int)g->num_threads; i++) {
+             uint32_t idx = g->thread_indices[i];
+             if (idx < MAX_SPU_THREADS) {
+                 spu_thread_t* t = &s_spu_threads[idx];
++                /* Still running after the stop: leak its context and local
++                 * store rather than free them under it. */
++                if (t->running && t->sctx) { t->in_use = 0; continue; }
+                 if (t->local_store) {
+                     free(t->local_store);
+                     t->local_store = NULL;
+@@ -1376,6 +1420,7 @@ static int64_t sys_spu_thread_group_terminate_handler(ppu_context* ctx)
+         g->state = SPU_GROUP_STATE_STOPPED;
+         g->cause = SPU_GROUP_CAUSE_TERMINATED;
+         g->exit_status = status;
++        spu_group_stop_threads(g);
+     }
+     fprintf(stderr, "[SPU] group_terminate id=0x%X status=%d\n", id, status);
+     fflush(stderr);

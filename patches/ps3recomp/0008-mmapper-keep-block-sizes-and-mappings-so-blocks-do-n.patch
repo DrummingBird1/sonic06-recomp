@@ -1,0 +1,270 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: DrummingBird1 <1979036+DrummingBird1@users.noreply.github.com>
+Date: Sat, 31 Oct 2026 17:02:44 +0200
+Subject: [PATCH] mmapper: keep block sizes and mappings, so blocks do not
+ overlap
+
+The mem_id -> size table held 256 entries and sys_mmapper_free_memory never
+emptied it. Sonic the Hedgehog allocates and frees heap chunks all the
+time; past 256 ids search_and_map no longer knew a block's size, laid every
+block out as 1 MB, and the title's large allocations overlapped (a movie's
+AU queue inside its picture buffers, then a crash in the decoder).
+
+- ids map to sizes in an unbounded table; free_memory drops the id.
+- search_and_map takes the lowest free run in the reservation instead of
+  only bumping a cursor; unmap_memory releases the range and returns the
+  mem_id, as lv2 does; map_memory records the address the title chose.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ runtime/ppu/ppu_loader.cpp    |  4 +-
+ runtime/ppu/ppu_sysprx.cpp    | 66 +++++++++++++++++++++++++-----
+ runtime/syscalls/sys_memory.c | 75 ++++++++++++++++++++++++++++++++---
+ runtime/syscalls/sys_memory.h |  4 +-
+ 4 files changed, 131 insertions(+), 18 deletions(-)
+
+diff --git a/runtime/ppu/ppu_loader.cpp b/runtime/ppu/ppu_loader.cpp
+index 9309f2d3..11b57d46 100644
+--- a/runtime/ppu/ppu_loader.cpp
++++ b/runtime/ppu/ppu_loader.cpp
+@@ -3169,7 +3169,7 @@ extern "C" void ppu_unlifted_stub(uint64_t addr, ppu_context* ctx)
+ /* The real lv2 syscall table (runtime/syscalls/lv2_register.c). */
+ extern "C" int lv2_try_syscall(ppu_context* ctx);
+ extern "C" int64_t sys_mmapper_allocate_address(ppu_context* ctx);
+-extern "C" int64_t sys_mmapper_search_map_address(uint32_t start, uint32_t size, uint32_t* out);
++extern "C" int64_t sys_mmapper_search_map_address(uint32_t start, uint32_t size, uint32_t mem_id, uint32_t* out);
+ 
+ /* lv2 syscall dispatch: r11 = syscall number, args in r3.. (PPC ABI).
+  * A few syscalls the CRT needs at boot are handled inline (boot-tuned); the
+@@ -3293,7 +3293,7 @@ extern "C" void lv2_syscall(ppu_context* ctx)
+         uint32_t size = ps3_mmapper_block_size(mem_id);
+         if (!size) size = 0x100000u;
+         uint32_t va = 0;
+-        int64_t rc = sys_mmapper_search_map_address(start, size, &va);
++        int64_t rc = sys_mmapper_search_map_address(start, size, mem_id, &va);
+         if (rc != CELL_OK) {
+             ctx->gpr[3] = (uint64_t)rc;
+             return;
+diff --git a/runtime/ppu/ppu_sysprx.cpp b/runtime/ppu/ppu_sysprx.cpp
+index 9cb50400..ae18ee30 100644
+--- a/runtime/ppu/ppu_sysprx.cpp
++++ b/runtime/ppu/ppu_sysprx.cpp
+@@ -17,6 +17,12 @@
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <string.h>
++#include <mutex>
++#include <unordered_map>
++#include "ps3emu/error_codes.h"   /* CELL_ESRCH */
++/* The mapper's address bookkeeping (runtime/syscalls/sys_memory.c). */
++extern "C" int64_t sys_mmapper_map_fixed_address(uint32_t addr, uint32_t size, uint32_t mem_id);
++extern "C" int64_t sys_mmapper_unmap_address(uint32_t addr, uint32_t* mem_id);
+ /* win32_compat.h is <windows.h> on Windows (CRITICAL_SECTION for the real
+  * lwmutex exclusion) and the POSIX shims elsewhere -- Sleep, DWORD, QPC. */
+ #include "../platform/win32_compat.h"
+@@ -454,22 +460,63 @@ static void sys_ppu_thread_get_id(ppu_context* ctx)
+  * hand back a unique opaque id; the backing is the flat VM, so the later
+  * search_and_map just needs a non-zero id to track. */
+ /* id -> size so sys_mmapper_search_and_map (lv2 337) can lay blocks out
+- * without overlap. Ids are dense from 0x1000. */
+-static uint32_t s_mm_sizes[256];
++ * without overlap. Ids count up from 0x1000 and are dropped by
++ * sys_mmapper_free_memory. This was a 256-entry array that free never
++ * emptied: Sonic the Hedgehog allocates and frees heap chunks all the time,
++ * and once it passed 256 every block mapped as 1 MB whatever its size, so its
++ * large allocations overlapped (a movie's AU queue sat inside its picture
++ * buffers). */
++static std::mutex s_mm_lock;
++static std::unordered_map<uint32_t, uint32_t> s_mm_sizes;
+ static uint32_t s_mmapper_next_id = 0x1000;
+ extern "C" uint32_t ps3_mmapper_block_size(uint32_t mem_id)
+ {
+-    uint32_t i = mem_id - 0x1000u;
+-    return (i < 256) ? s_mm_sizes[i] : 0;
++    std::lock_guard<std::mutex> lk(s_mm_lock);
++    auto it = s_mm_sizes.find(mem_id);
++    return it != s_mm_sizes.end() ? it->second : 0;
+ }
+ 
+ static uint32_t mmapper_new_id(uint32_t size)
+ {
++    std::lock_guard<std::mutex> lk(s_mm_lock);
+     uint32_t id = s_mmapper_next_id++;
+-    if (id - 0x1000u < 256) s_mm_sizes[id - 0x1000u] = size;
++    s_mm_sizes[id] = size;
+     return id;
+ }
+ 
++/* sys_mmapper_free_memory(u32 mem_id) */
++static void sys_mmapper_free_memory(ppu_context* ctx)
++{
++    std::lock_guard<std::mutex> lk(s_mm_lock);
++    s_mm_sizes.erase((uint32_t)ctx->gpr[3]);
++    ctx->gpr[3] = 0;
++}
++
++/* sys_mmapper_map_memory(u32 addr, u32 mem_id, u64 flags) */
++static void sys_mmapper_map_memory(ppu_context* ctx)
++{
++    uint32_t addr = (uint32_t)ctx->gpr[3], mem_id = (uint32_t)ctx->gpr[4];
++    uint32_t size = ps3_mmapper_block_size(mem_id);
++    ctx->gpr[3] = size ? (uint64_t)sys_mmapper_map_fixed_address(addr, size, mem_id)
++                       : (uint64_t)(int64_t)(int32_t)CELL_ESRCH;
++    if (getenv("PS3_MEMTRACE"))
++        fprintf(stderr, "[mmapper] map_memory(addr=0x%08X id 0x%X size=0x%X) -> 0x%08X\n",
++                addr, mem_id, size, (uint32_t)ctx->gpr[3]);
++}
++
++/* sys_mmapper_unmap_memory(u32 addr, u32* mem_id) */
++static void sys_mmapper_unmap_memory(ppu_context* ctx)
++{
++    uint32_t addr = (uint32_t)ctx->gpr[3], out = (uint32_t)ctx->gpr[4];
++    uint32_t mem_id = 0;
++    int64_t rc = sys_mmapper_unmap_address(addr, &mem_id);
++    if (rc == CELL_OK && out) vm_write32(out, mem_id);
++    ctx->gpr[3] = (uint64_t)rc;
++    if (getenv("PS3_MEMTRACE"))
++        fprintf(stderr, "[mmapper] unmap_memory(addr=0x%08X) -> id 0x%X rc 0x%08X\n",
++                addr, mem_id, (uint32_t)rc);
++}
++
+ static void sys_mmapper_allocate_memory(ppu_context* ctx)
+ {
+     uint32_t size       = (uint32_t)ctx->gpr[3];
+@@ -982,13 +1029,14 @@ extern "C" void ppu_sysprx_register(void)
+     ps3_hle_register_ctx(ps3_compute_nid("sys_lwcond_wait"),       "sys_lwcond_wait",       sys_lwcond_wait);
+ 
+     /* Thread id + memory manager (high-frequency boot imports). The flat VM
+-     * means map/unmap/free are no-ops: the memory already exists everywhere. */
++     * needs no backing changes, but map/unmap/free keep the address
++     * bookkeeping that search_and_map lays blocks out by. */
+     ps3_hle_register_ctx(ps3_compute_nid("sys_ppu_thread_get_id"),      "sys_ppu_thread_get_id",      sys_ppu_thread_get_id);
+     ps3_hle_register_ctx(ps3_compute_nid("sys_ppu_thread_create"),      "sys_ppu_thread_create",      hle_ppu_thread_create);
+     ps3_hle_register_ctx(ps3_compute_nid("sys_ppu_thread_exit"),        "sys_ppu_thread_exit",        hle_ppu_thread_exit);
+     ps3_hle_register_ctx(ps3_compute_nid("sys_mmapper_allocate_memory"), "sys_mmapper_allocate_memory", sys_mmapper_allocate_memory);
+     ps3_hle_register_ctx(ps3_compute_nid("sys_mmapper_allocate_memory_from_container"), "sys_mmapper_allocate_memory_from_container", sys_mmapper_allocate_memory_from_container);
+-    ps3_hle_register_ctx(ps3_compute_nid("sys_mmapper_map_memory"),     "sys_mmapper_map_memory",     crt_ok);
+-    ps3_hle_register_ctx(ps3_compute_nid("sys_mmapper_unmap_memory"),   "sys_mmapper_unmap_memory",   crt_ok);
+-    ps3_hle_register_ctx(ps3_compute_nid("sys_mmapper_free_memory"),    "sys_mmapper_free_memory",    crt_ok);
++    ps3_hle_register_ctx(ps3_compute_nid("sys_mmapper_map_memory"),     "sys_mmapper_map_memory",     sys_mmapper_map_memory);
++    ps3_hle_register_ctx(ps3_compute_nid("sys_mmapper_unmap_memory"),   "sys_mmapper_unmap_memory",   sys_mmapper_unmap_memory);
++    ps3_hle_register_ctx(ps3_compute_nid("sys_mmapper_free_memory"),    "sys_mmapper_free_memory",    sys_mmapper_free_memory);
+ }
+diff --git a/runtime/syscalls/sys_memory.c b/runtime/syscalls/sys_memory.c
+index 66eef25c..0e3dd40d 100644
+--- a/runtime/syscalls/sys_memory.c
++++ b/runtime/syscalls/sys_memory.c
+@@ -355,10 +355,37 @@ int64_t sys_mmapper_allocate_address(ppu_context* ctx)
+     return CELL_OK;
+ }
+ 
+-/* Claim a mapped block inside the caller's existing reservation. The loader's
++/* Blocks mapped into mapper reservations, so a mapping can be found again by
++ * address. Unmapping used to be a no-op and the cursor only grew, so a title
++ * that maps and unmaps its heap chunks as it goes (Sonic the Hedgehog: every
++ * movie, every menu) used the reservation up. Ranges are [addr, end) in 64 KB
++ * pages, the smaller page size a block can have. Called with the allocator lock
++ * held. */
++#define MAPPER_BLOCK_MAX 4096
++typedef struct mapper_block { uint32_t addr, end, mem_id; } mapper_block;
++static mapper_block s_mapper_blocks[MAPPER_BLOCK_MAX];
++static int s_mapper_block_n;
++
++static const mapper_block* mapper_block_overlapping(uint64_t addr, uint64_t end)
++{
++    for (int i = 0; i < s_mapper_block_n; ++i)
++        if (s_mapper_blocks[i].addr < end && addr < s_mapper_blocks[i].end)
++            return &s_mapper_blocks[i];
++    return NULL;
++}
++
++static int mapper_block_add(uint32_t addr, uint32_t end, uint32_t mem_id)
++{
++    if (s_mapper_block_n >= MAPPER_BLOCK_MAX) return 0;
++    s_mapper_blocks[s_mapper_block_n++] = (mapper_block){ addr, end, mem_id };
++    return 1;
++}
++
++/* Claim a mapped block inside the caller's existing reservation: the lowest
++ * free run at or above start, 1 MB aligned, that holds size. The loader's
+  * search-and-map bridge and the allocator share this ownership bookkeeping,
+  * so an unsuccessful request leaves all reservation cursors unchanged. */
+-int64_t sys_mmapper_search_map_address(uint32_t start, uint32_t size, uint32_t* out)
++int64_t sys_mmapper_search_map_address(uint32_t start, uint32_t size, uint32_t mem_id, uint32_t* out)
+ {
+     if (!out || !size) return (int64_t)(int32_t)CELL_EINVAL;
+     bump_lock();
+@@ -372,18 +399,54 @@ int64_t sys_mmapper_search_map_address(uint32_t start, uint32_t size, uint32_t*
+     if (!found) {
+         bump_unlock(); return (int64_t)(int32_t)CELL_EINVAL;
+     }
+-    uint64_t addr = found->next;
++    uint64_t addr = found->start;
+     if (start > addr) addr = start;
+     addr = (addr + 0xFFFFFu) & ~0xFFFFFull;
+-    uint64_t end = (addr + size + 0xFFFFFu) & ~0xFFFFFull;
+-    if (end > found->end || vm_commit((uint32_t)addr, size) != CELL_OK) {
++    uint64_t end = (addr + size + 0xFFFFu) & ~0xFFFFull;
++    for (const mapper_block* b; (b = mapper_block_overlapping(addr, end)) != NULL;) {
++        addr = ((uint64_t)b->end + 0xFFFFFu) & ~0xFFFFFull;
++        end = (addr + size + 0xFFFFu) & ~0xFFFFull;
++    }
++    if (end > found->end || vm_commit((uint32_t)addr, size) != CELL_OK ||
++        !mapper_block_add((uint32_t)addr, (uint32_t)end, mem_id)) {
+         bump_unlock(); return (int64_t)(int32_t)CELL_ENOMEM;
+     }
+-    found->next = (uint32_t)end;
++    if (end > found->next) found->next = (uint32_t)end;
+     *out = (uint32_t)addr;
+     bump_unlock(); return CELL_OK;
+ }
+ 
++/* sys_mmapper_map_memory: the title picked the address itself. Record it so
++ * search_and_map does not hand the same pages out again. */
++int64_t sys_mmapper_map_fixed_address(uint32_t addr, uint32_t size, uint32_t mem_id)
++{
++    if (!size) return (int64_t)(int32_t)CELL_EINVAL;
++    uint64_t end = ((uint64_t)addr + size + 0xFFFFu) & ~0xFFFFull;
++    bump_lock();
++    if (mapper_block_overlapping(addr, end)) {
++        bump_unlock(); return (int64_t)(int32_t)CELL_EBUSY;
++    }
++    if (vm_commit(addr, size) != CELL_OK || !mapper_block_add(addr, (uint32_t)end, mem_id)) {
++        bump_unlock(); return (int64_t)(int32_t)CELL_ENOMEM;
++    }
++    bump_unlock(); return CELL_OK;
++}
++
++/* sys_mmapper_unmap_memory: release the block mapped at addr and report which
++ * memory it held, as lv2 does. */
++int64_t sys_mmapper_unmap_address(uint32_t addr, uint32_t* mem_id)
++{
++    bump_lock();
++    for (int i = 0; i < s_mapper_block_n; ++i) {
++        if (s_mapper_blocks[i].addr != addr) continue;
++        if (mem_id) *mem_id = s_mapper_blocks[i].mem_id;
++        s_mapper_blocks[i] = s_mapper_blocks[--s_mapper_block_n];
++        bump_unlock(); return CELL_OK;
++    }
++    bump_unlock();
++    return (int64_t)(int32_t)CELL_EINVAL;
++}
++
+ /* ---------------------------------------------------------------------------
+  * sys_mmapper_free_address
+  *
+diff --git a/runtime/syscalls/sys_memory.h b/runtime/syscalls/sys_memory.h
+index a20806ad..11d97675 100644
+--- a/runtime/syscalls/sys_memory.h
++++ b/runtime/syscalls/sys_memory.h
+@@ -64,7 +64,9 @@ int64_t sys_memory_container_create(ppu_context* ctx);
+ int64_t sys_memory_container_destroy(ppu_context* ctx);
+ int64_t sys_memory_container_get_size(ppu_context* ctx);
+ int64_t sys_mmapper_allocate_address(ppu_context* ctx);
+-int64_t sys_mmapper_search_map_address(uint32_t start, uint32_t size, uint32_t* out);
++int64_t sys_mmapper_search_map_address(uint32_t start, uint32_t size, uint32_t mem_id, uint32_t* out);
++int64_t sys_mmapper_map_fixed_address(uint32_t addr, uint32_t size, uint32_t mem_id);
++int64_t sys_mmapper_unmap_address(uint32_t addr, uint32_t* mem_id);
+ int64_t sys_mmapper_free_address(ppu_context* ctx);
+ int64_t sys_mmapper_allocate_shared_memory(ppu_context* ctx);
+ int64_t sys_mmapper_map_shared_memory(ppu_context* ctx);

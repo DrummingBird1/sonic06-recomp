@@ -1,0 +1,41 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: DrummingBird1 <1979036+DrummingBird1@users.noreply.github.com>
+Date: Sat, 31 Oct 2026 16:44:37 +0200
+Subject: [PATCH] d3d12: cache a fragment program whose pipeline failed
+
+A failed PSO returned NULL without a cache entry, so every later draw of
+the program decompiled and compiled it again. Sonic the Hedgehog's episode
+select has two programs that sample unit 11, past the four units the root
+signature declares; retrying them made each frame take seconds.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ libs/video/rsx_d3d12_backend.c | 12 +++++++++---
+ 1 file changed, 9 insertions(+), 3 deletions(-)
+
+diff --git a/libs/video/rsx_d3d12_backend.c b/libs/video/rsx_d3d12_backend.c
+index 930061e9..dd4d8611 100644
+--- a/libs/video/rsx_d3d12_backend.c
++++ b/libs/video/rsx_d3d12_backend.c
+@@ -2757,12 +2757,18 @@ static ID3D12PipelineState* vp_get_fp_pso(int vs_idx, u32 fp_addr, u32 blend, in
+     hr = s_d3d.device->lpVtbl->CreateGraphicsPipelineState(
+         s_d3d.device, &pd, &IID_ID3D12PipelineState, (void**)&pso);
+     pb->lpVtbl->Release(pb);
++    /* A failed pipeline is cached too, as a NULL entry: the draw is skipped
++     * either way, and without the entry every later draw of the program
++     * decompiled and compiled it again. Sonic the Hedgehog's episode select
++     * has two programs that sample unit 11, past the four this root signature
++     * declares; retrying them on every draw made each frame take seconds. */
+     if (FAILED(hr)) {
+         static int _e3=0; if (PS3_LOG_FIRST(_e3, 16)) printf("[FP] PSO FAIL (fp=0x%08X, 0x%08lX)\n", fp_addr, hr);
+-        return NULL;
++        pso = NULL;
++    } else {
++        { static int _ok=0; if (PS3_LOG_FIRST(_ok, 32)) printf("[FP] guest FP pipeline ready (fp=0x%08X)\n", fp_addr); }
++        rdoc_name((ID3D12Object*)pso, "pso fp 0x%08X ucode %08X vs %d", fp_addr, uhash, vs_idx);
+     }
+-    { static int _ok=0; if (PS3_LOG_FIRST(_ok, 32)) printf("[FP] guest FP pipeline ready (fp=0x%08X)\n", fp_addr); }
+-    rdoc_name((ID3D12Object*)pso, "pso fp 0x%08X ucode %08X vs %d", fp_addr, uhash, vs_idx);
+ 
+     /* insert (evict oldest when full) */
+     if (s_d3d.vp_fp_n >= VP_FP_CACHE) {

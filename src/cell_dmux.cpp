@@ -713,8 +713,8 @@ void hle_cellDmuxEnableEs(ppu_context* ctx)
         d->es.push_back(std::move(e));
     }
     vm_write32(out, handle);
-    printf("[cellDmux] EnableEs 0x%02X/0x%02X -> 0x%08X (%s, buffer 0x%X)\n", major, minor, handle,
-           k.avc ? "AVC" : "ATRAC3plus", k.buffer_size);
+    printf("[cellDmux] EnableEs 0x%02X/0x%02X -> 0x%08X (%s, buffer 0x%X, memory 0x%08X+0x%X)\n",
+           major, minor, handle, k.avc ? "AVC" : "ATRAC3plus", k.buffer_size, mem, mem_size);
     ret(ctx, CELL_OK);
 }
 

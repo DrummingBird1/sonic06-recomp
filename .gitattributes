@@ -1,0 +1,3 @@
+# The ps3recomp patches are applied with `git am --keep-cr` (tools/setup_ps3recomp.ps1).
+# With core.autocrlf they would be checked out with CRLF and no longer match the files they patch.
+patches/**/*.patch -text
