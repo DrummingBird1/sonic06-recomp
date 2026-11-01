@@ -155,9 +155,27 @@ static void hle_cellRescVideoOutResolutionId2RescBufferMode(ppu_context* ctx)
     ret(ctx, CELL_OK);
 }
 
+/* cellSurMixerStart reads the key from a global that the mixer's own thread
+ * sets (0x134B214) just before it creates its event queue. On hardware that
+ * thread has the higher priority and has always run first. Here both run at
+ * once, and when the caller won it registered key 0: no audio event ever reached
+ * the mixer, no sound played, and the first movie's audio ring never drained, so
+ * the player could not stop (the hang at 0xB796BC). cellAudio looks the queue up
+ * by key on every block, so the key the mixer is about to use can be named now. */
+#define SURMIXER_KEY 0x8000CAFE02460300ull
+
+int32_t cellAudioSetNotifyEventQueue(uint64_t key);
+
+static void hle_cellAudioSetNotifyEventQueue(ppu_context* ctx)
+{
+    uint64_t key = ctx->gpr[3];
+    ret(ctx, (uint32_t)cellAudioSetNotifyEventQueue(key ? key : SURMIXER_KEY));
+}
+
 __attribute__((constructor))
 static void sonic06_hle_register(void)
 {
+    ps3_hle_register_ctx(0x377E0CD9u, "cellAudioSetNotifyEventQueue", hle_cellAudioSetNotifyEventQueue);
     ps3_hle_register_ctx(0x3A33C1FDu, "_cellGcmFunc15", hle_cellGcmFunc15);
     ps3_hle_register_ctx(0x01220224u, "cellRescGcmSurface2RescSrc", hle_cellRescGcmSurface2RescSrc);
     ps3_hle_register_ctx(0x0D3C22CEu, "cellRescSetWaitFlip", hle_cellRescSetWaitFlip);
