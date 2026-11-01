@@ -30,7 +30,7 @@ Run `Sonic06.cmd`. The window shows what is missing and offers the steps:
 1. **Choose game ISO** copies the disc into `game/`.
 2. Decrypt `game/EBOOT.BIN` in RPCS3, with Utilities > Decrypt PS3 Binaries. The output is `game/EBOOT.elf`.
 3. **Choose FFmpeg folder** points to the folder with `avcodec-*.dll`.
-4. **Build** translates and compiles the game. It takes about 15 minutes or more.
+4. **Build** translates and compiles the game. It took 18 minutes from a clean clone.
 5. **Play**.
 
 From a console, the same steps are in `tools/launcher.ps1`. Pass your checkout with `-Ps3Recomp` and the FFmpeg headers with `-FFmpegInclude` once, and they are remembered. Python setup is in [docs/HANDOFF.md](docs/HANDOFF.md).
