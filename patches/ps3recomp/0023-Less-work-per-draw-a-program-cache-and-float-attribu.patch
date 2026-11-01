@@ -1,0 +1,95 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: DrummingBird1 <1979036+DrummingBird1@users.noreply.github.com>
+Date: Sun, 1 Nov 2026 23:50:13 +0200
+Subject: [PATCH] Less work per draw: a program cache, and float attributes in
+ whole words
+
+vp_get_vs hashed the program a byte at a time on every draw. A counter of
+changes to the store and the program start name a program exactly.
+Float attributes byte swap a word at a time, with a fixed size copy.
+---
+ libs/video/rsx_commands.c      |  1 +
+ libs/video/rsx_commands.h      |  1 +
+ libs/video/rsx_d3d12_backend.c | 16 +++++++++++++++-
+ libs/video/rsx_vertex_fetch.c  | 10 ++++++++--
+ 4 files changed, 25 insertions(+), 3 deletions(-)
+
+diff --git a/libs/video/rsx_commands.c b/libs/video/rsx_commands.c
+index a39639f1..a7a39955 100644
+--- a/libs/video/rsx_commands.c
++++ b/libs/video/rsx_commands.c
+@@ -356,6 +356,7 @@ static inline void rsx_vp_ucode_word(rsx_state* state, u32 data)
+         const u8 b[4] = { (u8)data, (u8)(data >> 8), (u8)(data >> 16), (u8)(data >> 24) };
+         if (memcmp(&state->vp_ucode[w], b, 4) != 0) {
+             memcpy(&state->vp_ucode[w], b, 4);
++            state->vp_ucode_gen++;
+             state->vp_dirty = 1;
+         }
+         state->vp_ucode_write = w + 4;
+diff --git a/libs/video/rsx_commands.h b/libs/video/rsx_commands.h
+index 246ca166..1d80fbde 100644
+--- a/libs/video/rsx_commands.h
++++ b/libs/video/rsx_commands.h
+@@ -386,6 +386,7 @@ typedef struct rsx_state {
+     u32 vp_ucode_write;       /* byte write cursor (from SET_TRANSFORM_PROGRAM_LOAD) */
+     u32 vp_ucode_bytes;       /* highest byte written + 1 */
+     int vp_dirty;             /* program changed since last translate */
++    u32 vp_ucode_gen;         /* counts the changes to vp_ucode */
+ 
+     /* Dirty flags for incremental state updates */
+     int surface_dirty;
+diff --git a/libs/video/rsx_d3d12_backend.c b/libs/video/rsx_d3d12_backend.c
+index b2e32f95..413160af 100644
+--- a/libs/video/rsx_d3d12_backend.c
++++ b/libs/video/rsx_d3d12_backend.c
+@@ -2004,6 +2004,15 @@ static int vp_get_vs(const rsx_state* st)
+     { static int off = -1; if (off < 0) off = getenv("VP_START_OFF") ? 1 : 0;
+       if (!off) vstart = st->transform_program_start * 16u; }
+     if (vstart >= st->vp_ucode_bytes) vstart = 0;
++    /* This runs for every draw, and hashing the program a byte at a time took 10%
++     * of the RSX thread in a heavy scene. The store only changes through one
++     * method, which counts its changes, so a program start and that count name
++     * a program exactly. */
++    static struct { u32 gen, start; int idx; } known[16];
++    const u32 ki = (vstart >> 4) & 15u;
++    if (known[ki].gen == st->vp_ucode_gen + 1u && known[ki].start == vstart &&
++        known[ki].idx < s_d3d.vp_vs_n)
++        return known[ki].idx;
+     const u8* vuc = st->vp_ucode + vstart;
+     u32 vlen = st->vp_ucode_bytes - vstart;
+     /* Hash the program's own bytes, up to its end bit, not everything behind it in the store (as the Metal
+@@ -2014,7 +2023,12 @@ static int vp_get_vs(const rsx_state* st)
+       if (instrs) vlen = instrs * 16u; }
+     u32 hash = vp_hash_ucode(vuc, vlen);
+     for (int i = 0; i < s_d3d.vp_vs_n; i++)
+-        if (s_d3d.vp_vs[i].hash == hash) return i;
++        if (s_d3d.vp_vs[i].hash == hash) {
++            known[ki].gen = st->vp_ucode_gen + 1u;
++            known[ki].start = vstart;
++            known[ki].idx = i;
++            return i;
++        }
+ 
+     static char hlsl[262144];
+     int ni = rsx_vp_decompile(vuc, vlen, hlsl, sizeof hlsl);
+diff --git a/libs/video/rsx_vertex_fetch.c b/libs/video/rsx_vertex_fetch.c
+index c3edebc0..4d610eeb 100644
+--- a/libs/video/rsx_vertex_fetch.c
++++ b/libs/video/rsx_vertex_fetch.c
+@@ -30,8 +30,14 @@ static inline void decode_attrib(const u8* p, const rsx_vertex_attrib* a, u32 n,
+                                  float out[4])
+ {
+     switch (a->type) {
+-    case 2: /* CELL_GCM_VERTEX_F: float32 BE */
+-        for (u32 k = 0; k < n; k++) out[k] = rsx_rd_bef(p + k * 4);
++    case 2: /* CELL_GCM_VERTEX_F: float32 BE. The bulk of a heavy scene, so whole
++             * words and not a call per component. */
++        for (u32 k = 0; k < n; k++) {
++            u32 w;
++            memcpy(&w, p + k * 4, 4);
++            w = __builtin_bswap32(w);
++            memcpy(&out[k], &w, 4);
++        }
+         break;
+     case 3: /* SF: half float BE */
+         for (u32 k = 0; k < n; k++) out[k] = rsx_rd_half_be(p + k * 2);
