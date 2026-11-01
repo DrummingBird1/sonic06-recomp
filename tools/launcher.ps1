@@ -58,7 +58,7 @@ function Get-Status {
     [pscustomobject]@{ Step = "Memory ${ramGb} GB (build needs 32)"; Ok = $ramGb -ge 32; Fix = 'only the build needs it' }
     [pscustomobject]@{ Step = 'LLVM clang-cl'; Ok = Test-Path 'C:\Program Files\LLVM\bin\clang-cl.exe'; Fix = 'install LLVM, needed for the build' }
     [pscustomobject]@{ Step = 'Visual Studio C++'; Ok = [bool](Find-Vcvars); Fix = 'install the C++ workload, needed for the build' }
-    [pscustomobject]@{ Step = 'Python environment'; Ok = Test-Path (Join-Path $root '.venv\Scripts\python.exe'); Fix = 'see "setup from zero" in docs/HANDOFF.md' }
+    [pscustomobject]@{ Step = 'Python environment'; Ok = Test-Path (Join-Path $root '.venv\Scripts\python.exe'); Fix = 'launcher.ps1 -Build creates it' }
   )
 }
 
@@ -88,6 +88,15 @@ function Build-Game {
   if (-not (Test-Path (Join-Path $root 'work\ps3recomp'))) {
     $src = if ($cfg.ps3recomp) { @{ Source = $cfg.ps3recomp } } else { @{} }
     & (Join-Path $tools 'setup_ps3recomp.ps1') @src
+  }
+  $py = Join-Path $root '.venv\Scripts\python.exe'
+  if (-not (Test-Path $py)) {
+    if (-not (Get-Command uv -ErrorAction SilentlyContinue)) { throw 'Install uv: https://github.com/astral-sh/uv' }
+    Push-Location $root
+    try {
+      uv venv --python 3.12 .venv
+      uv pip install --python $py -r work\ps3recomp\requirements.txt -r tools\re\requirements.txt
+    } finally { Pop-Location }
   }
   if (-not (Test-Path (Join-Path $root 'work\recompiled'))) { & (Join-Path $tools 'relift.ps1') }
   $inc = if ($cfg.ffmpegInclude) { @{ FFmpegInclude = $cfg.ffmpegInclude } } else { @{} }
