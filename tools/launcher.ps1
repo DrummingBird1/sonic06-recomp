@@ -63,7 +63,7 @@ function Get-Status {
 }
 
 function Extract-Disc([string]$image) {
-  $image = (Resolve-Path $image).Path
+  $image = (Resolve-Path -LiteralPath $image).Path   # the usual name has [BLES00028] in it
   $mount = Mount-DiskImage -ImagePath $image -PassThru
   try {
     $drive = ($mount | Get-Volume).DriveLetter
