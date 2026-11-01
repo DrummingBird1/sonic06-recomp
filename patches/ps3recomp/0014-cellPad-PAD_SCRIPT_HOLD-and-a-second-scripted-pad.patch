@@ -1,0 +1,48 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: DrummingBird1 <1979036+DrummingBird1@users.noreply.github.com>
+Date: Sun, 1 Nov 2026 03:14:36 +0200
+Subject: [PATCH] cellPad: PAD_SCRIPT_HOLD and a second scripted pad
+
+A 40-poll press auto-repeats in a menu. Bit 16 of a mask presses on port 1, with
+PAD_SECOND=1, so two-player modes can be reached by script.
+---
+ libs/input/cellPad.c | 12 ++++++++++--
+ 1 file changed, 10 insertions(+), 2 deletions(-)
+
+diff --git a/libs/input/cellPad.c b/libs/input/cellPad.c
+index afdd93de..ee385f98 100644
+--- a/libs/input/cellPad.c
++++ b/libs/input/cellPad.c
+@@ -712,6 +712,9 @@ static void pad_poll_backend(void)
+ #endif
+ #ifdef _WIN32
+     if (!s_host_state[0].connected) pad_poll_keyboard();
++    /* PAD_SECOND=1: a second virtual pad, for PAD_SCRIPT masks with bit 16 set. */
++    { static int two = -1; if (two < 0) two = getenv("PAD_SECOND") ? 1 : 0;
++      if (two) s_host_state[1].connected = 1; }
+ #endif
+     pad_track_assign();
+     pad_unlock();
+@@ -932,7 +935,7 @@ skip_inject: ;
+                      *p ? " -- TRUNCATED at 256, the rest are ignored" : "");
+           }
+       }
+-      if (s_sc && port_no == 0) {
++      if (s_sc && port_no <= 1) {
+           double now = pad_clock(t0);
+           /* Latch, do not window. A fixed time window is missed whenever the
+            * title stops polling the pad for longer than the window (it does
+@@ -942,7 +945,12 @@ skip_inject: ;
+            * looks like regardless of poll rate. */
+           static int fired[256], held[256];
+           for (int i = 0; i < n_ev; i++) {
+-              if (!fired[i] && now >= ev[i].t) { fired[i] = 1; held[i] = 40; }
++              if (((ev[i].mask >> 16) & 1u) != port_no) continue;   /* bit 16: the second pad */
++              if (!fired[i] && now >= ev[i].t) {
++                  /* PAD_SCRIPT_HOLD=<polls>: 40 is long enough for a menu to auto-repeat. */
++                  static int hold = -1;
++                  if (hold < 0) { const char* h = getenv("PAD_SCRIPT_HOLD"); hold = h ? atoi(h) : 40; }
++                  fired[i] = 1; held[i] = hold; }
+               if (held[i] > 0) {
+                   held[i]--;
+                   data->button[CELL_PAD_BTN_OFFSET_DIGITAL1] |= (u16)(ev[i].mask & 0xFF);
