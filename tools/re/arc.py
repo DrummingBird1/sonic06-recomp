@@ -1,5 +1,5 @@
-"""Lists or extracts files from the game's U8 archives (magic 55AA382D, 16-byte
-nodes: type|name, data offset, stored size, unpacked size; zlib when stored)."""
+"""List or extract files from the game's U8 archives (magic 55AA382D, 16-byte
+nodes: type|name, data offset, stored size, unpacked size; zlib when stored).
 
     python tools/re/arc.py game/disc/PS3_GAME/USRDIR/win32/archives/player_sonic.arc 'dds$'
     python tools/re/arc.py ARC REGEX OUTDIR      # also writes the matches, unpacked
