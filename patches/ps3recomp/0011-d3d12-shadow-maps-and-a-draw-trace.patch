@@ -1,0 +1,249 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: DrummingBird1 <1979036+DrummingBird1@users.noreply.github.com>
+Date: Sun, 1 Nov 2026 02:22:50 +0200
+Subject: [PATCH] d3d12: shadow maps, and a draw trace
+
+bind_texture dropped depth formats, so a shadow map never reached its unit and
+the program's lighting term read 0. Bind the depth surface and compare in the
+program, as the RSX does. DRAW_TRACE lists every op of chosen batches.
+---
+ libs/video/rsx_d3d12_backend.c | 90 +++++++++++++++++++++++++++++++---
+ libs/video/rsx_fp_decompiler.c |  8 +++
+ libs/video/rsx_fp_decompiler.h |  3 ++
+ 3 files changed, 95 insertions(+), 6 deletions(-)
+
+diff --git a/libs/video/rsx_d3d12_backend.c b/libs/video/rsx_d3d12_backend.c
+index 3fe2920a..81a0eaf7 100644
+--- a/libs/video/rsx_d3d12_backend.c
++++ b/libs/video/rsx_d3d12_backend.c
+@@ -137,6 +137,7 @@ typedef struct {
+     u32 zeta_off;       /* depth surface (SET_SURFACE_ZETA_OFFSET) when the surface has one */
+     int no_color;       /* colour target NONE with a depth surface: a depth-only pass */
+     int tex_ds[RSX_MAX_TEXTURES];   /* pre-pass: OffDS read through unit u (its colour copy is tex_rt), -1 = none */
++    int tex_zs[RSX_MAX_TEXTURES];   /* pre-pass: OffDS a shadow-compare unit reads directly, -1 = none */
+     /* Guest viewport rect at draw time (target pixels). Sub-viewport layouts
+      * (wave's debug tiles) position quads with this, not with constants --
+      * forcing full-target viewports drew every tile window-sized. */
+@@ -257,6 +258,8 @@ typedef struct {
+                              * stale compile forever. */
+     u32 cmask;              /* colour write mask (PSO key) */
+     u32 cull;               /* packed face culling (PSO key) */
++    u32 shadow_key;         /* depth-compare setup of the units (PSO key): the HLSL
++                             * compares inside the program */
+     u32 cube_mask;          /* which units are cube textures (PSO key): the HLSL
+                              * declares those samplers as TextureCube, so a cube
+                              * and a 2D variant of the same program are different
+@@ -2326,6 +2329,27 @@ static u32 dr_cube_mask(const D3D12DrawRecord* dr)
+     return m;
+ }
+ 
++/* Depth-compare setup of a draw's texture units. A D24/D16 texture whose
++ * ADDRESS register names a compare function is a shadow map: the RSX answers a
++ * TEX with the compare result, not the depth. Returns a key for the pipeline
++ * cache, 0 when no unit compares. */
++static u32 dr_shadow_descs(const D3D12DrawRecord* dr, rsx_fp_shadow_desc out[RSX_MAX_TEXTURES])
++{
++    u32 key = 0;
++    for (int u = 0; u < RSX_MAX_TEXTURES; u++) {
++        memset(&out[u], 0, sizeof out[u]);
++        const u32 base = dr->tex[u].fmt & 0x9Fu;
++        if (!dr->tex[u].set || (base != 0x90 && base != 0x92)) continue;
++        rsx_fp_shadow_desc_from_texture(&out[u], dr->tex[u].fmt, dr->tex[u].cube ? 3 : 2,
++                                        (u32)dr->tex[u].cube, dr->tex[u].mips, dr->tex[u].filter,
++                                        dr->tex[u].addr, dr->tex[u].ctrl0);
++        if (out[u].enabled != 1) { memset(&out[u], 0, sizeof out[u]); continue; }
++        key = key * 31u + (((u32)u << 8) | ((u32)out[u].func << 4) |
++                           ((u32)out[u].unnormalized << 2) | ((u32)out[u].linear << 1) | 1u);
++    }
++    return key;
++}
++
+ /* Which texture units a draw's fragment program samples, as a 16-bit mask
+  * (0 without a program, or when its ucode does not resolve). */
+ static u32 dr_fp_units(const D3D12DrawRecord* dr)
+@@ -2340,7 +2364,8 @@ static u32 dr_fp_units(const D3D12DrawRecord* dr)
+ 
+ static ID3D12PipelineState* vp_get_fp_pso(int vs_idx, u32 fp_addr, u32 blend, int nrt,
+                                           DXGI_FORMAT rtfmt, u32 ctrl, u32 cmask, u32 cull,
+-                                          u32 cube_mask, u64 zs)
++                                          u32 cube_mask, u64 zs,
++                                          const rsx_fp_shadow_desc* shadow, u32 shadow_key)
+ {
+     if (nrt < 0) nrt = 0; if (nrt > 4) nrt = 4;   /* 0: a depth-only pass */
+     if (rtfmt == 0) rtfmt = DXGI_FORMAT_R8G8B8A8_UNORM;
+@@ -2399,7 +2424,8 @@ static ID3D12PipelineState* vp_get_fp_pso(int vs_idx, u32 fp_addr, u32 blend, in
+             s_d3d.vp_fp[i].rtfmt == (u32)rtfmt && s_d3d.vp_fp[i].ctrl == ctrl &&
+             s_d3d.vp_fp[i].ucode_hash == uhash && s_d3d.vp_fp[i].cmask == cmask &&
+             s_d3d.vp_fp[i].cull == cull &&
+-            s_d3d.vp_fp[i].cube_mask == cube_mask && s_d3d.vp_fp[i].zs == zs)
++            s_d3d.vp_fp[i].cube_mask == cube_mask && s_d3d.vp_fp[i].zs == zs &&
++            s_d3d.vp_fp[i].shadow_key == shadow_key)
+             return s_d3d.vp_fp[i].pso;
+     s_perf_pso_miss++;      /* falls through to a full decompile + D3DCompile */
+     /* PSOMISSDBG=1: on a miss, name the key field that differs from an existing
+@@ -2463,7 +2489,9 @@ static ID3D12PipelineState* vp_get_fp_pso(int vs_idx, u32 fp_addr, u32 blend, in
+     static int ctrl_auto = -1;
+     if (ctrl_auto < 0) ctrl_auto = getenv("RSX_FP_CTRL_AUTO") ? 1 : 0;
+     u32 fp_ctrl = ctrl_auto ? RSX_FP_CTRL_AUTO : ctrl;
+-    int n = rsx_fp_decompile(vm_base + off, 4096, fp_ctrl, hlsl, sizeof(hlsl));
++    int n = shadow_key ? rsx_fp_decompile_shadow_ex(vm_base + off, 4096, fp_ctrl, 0, shadow,
++                                                    hlsl, sizeof(hlsl))
++                       : rsx_fp_decompile(vm_base + off, 4096, fp_ctrl, hlsl, sizeof(hlsl));
+     if (n <= 0) { static int _e=0; if(PS3_LOG_FIRST(_e, 16)) printf("[FP] decompile fail (fp=0x%08X)\n", fp_addr); return NULL; }
+     /* FP_LIST=1: every program the title actually compiles, with its size. A
+      * fragment program that hangs the GPU shows up here as an implausible
+@@ -2802,6 +2830,7 @@ static ID3D12PipelineState* vp_get_fp_pso(int vs_idx, u32 fp_addr, u32 blend, in
+     s_d3d.vp_fp[s_d3d.vp_fp_n].cmask   = cmask;
+     s_d3d.vp_fp[s_d3d.vp_fp_n].cull    = cull;
+     s_d3d.vp_fp[s_d3d.vp_fp_n].cube_mask = cube_mask;
++    s_d3d.vp_fp[s_d3d.vp_fp_n].shadow_key = shadow_key;
+     s_d3d.vp_fp[s_d3d.vp_fp_n].zs      = zs;
+     s_d3d.vp_fp[s_d3d.vp_fp_n].pso     = pso;
+     s_d3d.vp_fp_n++;
+@@ -4663,6 +4692,36 @@ static void render_frame(void)
+         s_d3d.draw_count = (cut < s_d3d.draw_count) ? cut : s_d3d.draw_count;
+       } }
+ 
++    /* DRAW_TRACE=<seconds>:<batches>: list every recorded op of the given number
++     * of batches once the run has lasted that long: target, program, state and
++     * textures. "What drew what, in which order" is the first question about
++     * any multi-pass frame, and nothing else here answers it for a whole frame. */
++    { static int dt_left = -1; static double dt_at = 0; static clock_t dt_t0 = 0;
++      if (dt_left < 0) { const char* e = getenv("DRAW_TRACE"); dt_left = 0; dt_t0 = clock();
++          if (e) sscanf(e, "%lf:%d", &dt_at, &dt_left); }
++      if (dt_left > 0 && (double)(clock() - dt_t0) / CLOCKS_PER_SEC >= dt_at) {
++          dt_left--;
++          fprintf(stderr, "[DT] batch frame=%u ops=%u%c", (unsigned)s_d3d.frame_count,
++                  (unsigned)s_d3d.draw_count, 10);
++          for (u32 _i = 0; _i < s_d3d.draw_count && _i < MAX_DRAWS; _i++) {
++              const D3D12DrawRecord* r = &s_d3d.draws[_i];
++              if (r->is_clear) {
++                  fprintf(stderr, "[DT] %u CLEAR rt=0x%X mask=0x%X c=%.2f,%.2f,%.2f,%.2f%c", _i,
++                          r->rt_off, r->clear_mask, r->cc[0], r->cc[1], r->cc[2], r->cc[3], 10);
++                  continue;
++              }
++              fprintf(stderr, "[DT] %u rt=0x%X/%x z=0x%X nocol=%d fp=0x%X vs=%d n=%u cm=0x%X bl=%d/0x%X at=0x%X cull=%u",
++                      _i, r->rt_off, r->rt_fmt & 0x1F, r->zeta_off, r->no_color, r->fp_addr, r->vs_idx,
++                      r->indexed ? r->index_count : r->vertex_count, r->cmask, r->blend, r->blend_key,
++                      r->alpha_ctl, r->cull);
++              for (int _u = 0; _u < RSX_MAX_TEXTURES; _u++)
++                  if (r->tex[_u].set)
++                      fprintf(stderr, " t%d=0x%X:%ux%u:%X%s", _u, r->tex[_u].raw, r->tex[_u].w,
++                              r->tex[_u].h, r->tex[_u].fmt, r->tex_rt[_u] >= 0 ? ":RT" : "");
++              fprintf(stderr, "%c", 10);
++          }
++      } }
++
+     /* DRAW_LIMIT=<N>: keep only the first N recorded ops this frame. The duck's
+      * draws are ops 00..~03 of every frame, so a small limit shows the ducks
+      * alone -- separating "the ducks never rasterize" from "later geometry is
+@@ -4766,7 +4825,7 @@ static void render_frame(void)
+                 off_rt_get(dr->rt_mrt[_m], dr->rt_w, dr->rt_h, dr->rt_fmt);
+         if (dr->is_vp && dr->zeta_off && (dr->rt_off || dr->no_color))
+             off_ds_get(dr->zeta_off, dr->rt_w, dr->rt_h);
+-        for (int _u = 0; _u < RSX_MAX_TEXTURES; _u++) dr->tex_ds[_u] = -1;   /* set below for draws */
++        for (int _u = 0; _u < RSX_MAX_TEXTURES; _u++) dr->tex_ds[_u] = dr->tex_zs[_u] = -1;   /* set below for draws */
+     }
+     for (u32 _d = 0; _d < s_d3d.draw_count && _d < MAX_DRAWS; _d++) {
+         const D3D12DrawRecord* dr = &s_d3d.draws[_d];
+@@ -4874,10 +4933,23 @@ static void render_frame(void)
+         dr->tex_units = 0xFu | dr_fp_units(dr);
+         for (int _u = 0; _u < RSX_MAX_TEXTURES; _u++)
+             if (dr->tex[_u].set) dr->tex_units |= 1u << _u;
++        rsx_fp_shadow_desc shadow[RSX_MAX_TEXTURES];
++        const u32 shadow_key = dr_shadow_descs(dr, shadow);
+         for (int _u = 0; _u < RSX_MAX_TEXTURES; _u++) {
+             u32 wslot = DRAW_SRV_BASE + _d * RSX_MAX_TEXTURES + (u32)_u;
+             dr->tex_rt[_u] = -1;
+             if (!(dr->tex_units & (1u << _u))) continue;
++            /* A shadow map: the program compares against the depth itself, so it
++             * reads the depth surface and not the A8R8G8B8 colour copy. */
++            if (shadow[_u].enabled) {
++                const int zs = off_ds_find(dr->tex[_u].raw);
++                if (zs >= 0) {
++                    dr->tex_zs[_u] = zs;
++                    srv_write(wslot, s_d3d.off_ds[zs].res, DXGI_FORMAT_R24_UNORM_X8_TYPELESS,
++                              D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING);
++                    continue;
++                }
++            }
+             /* A depth surface read as a texture: its colour copy (made in the
+              * RT pre-pass), refreshed from the depth buffer just before this
+              * draw (ds_convert). */
+@@ -4987,7 +5059,7 @@ static void render_frame(void)
+                                        dr->rt_off ? rsx_surface_dxgi(dr->rt_fmt)
+                                                   : DXGI_FORMAT_R8G8B8A8_UNORM,
+                                        dr->fp_ctrl, dr->cmask, dr->cull, dr_cube_mask(dr),
+-                                       dr->zs_key);
++                                       dr->zs_key, shadow, shadow_key);
+         if (perf_on()) s_perf_pso += perf_now() - _ps0;
+     }
+ 
+@@ -5192,6 +5264,8 @@ static void render_frame(void)
+                 const D3D12DrawRecord* dr = &s_d3d.draws[d];
+                 if (!dr->is_vp) continue;
+                 for (int _u = 0; _u < RSX_MAX_TEXTURES; _u++) {
++                    if (dr->tex_zs[_u] >= 0 && dr->tex_zs[_u] != cur_z)
++                        off_ds_transition(dr->tex_zs[_u], D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+                     const int ds = dr->tex_ds[_u];
+                     if (ds < 0 || ds == cur_z || s_d3d.off_ds[ds].conv_gen == s_d3d.off_ds[ds].gen)
+                         continue;
+@@ -5364,13 +5438,16 @@ static void render_frame(void)
+                 }
+                 /* Per-draw pipeline: prefer the guest's own compiled FP; fall
+                  * back to the hardcoded atlas/colour PS pair. */
++                rsx_fp_shadow_desc shadow[RSX_MAX_TEXTURES];
++                const u32 shadow_key = dr_shadow_descs(dr, shadow);
+                 ID3D12PipelineState* dpso =
+                     dr->fp_addr ? vp_get_fp_pso(dr->vs_idx, dr->fp_addr, dr->blend_key,
+                                                 dr_num_rts(dr),
+                                                 dr->rt_off ? rsx_surface_dxgi(dr->rt_fmt)
+                                                            : DXGI_FORMAT_R8G8B8A8_UNORM,
+                                                 dr->fp_ctrl, dr->cmask, dr->cull,
+-                                                dr_cube_mask(dr), dr->zs_key) : NULL;
++                                                dr_cube_mask(dr), dr->zs_key,
++                                                shadow, shadow_key) : NULL;
+                 s_d3d.cmd_list->lpVtbl->SetPipelineState(s_d3d.cmd_list,
+                                                          dpso ? dpso : vpso);
+                 s_d3d.cmd_list->lpVtbl->OMSetStencilRef(s_d3d.cmd_list, dr->stencil_ref & 0xFFu);
+@@ -7544,6 +7621,7 @@ static void d3d12_bind_texture(void* ud, u32 unit, const rsx_texture_state* tex)
+         (base_fmt == 0x81 /* B8 */ || base_fmt == 0x85 /* A8R8G8B8 */ ||
+          base_fmt == 0x8B /* G8B8: LBP's font atlas */ ||
+          (base_fmt >= 0x86 && base_fmt <= 0x88) /* DXT1/23/45 */ ||
++         base_fmt == 0x90 || base_fmt == 0x92 /* DEPTH24_D8, DEPTH16: shadow maps */ ||
+          base_fmt == 0x9A /* W16Z16Y16X16 half-float: RTT intermediates */)) {
+         /* TEX_RESOLVE_AUTO=1: resolve through the page tables (local-page map
+          * then IO table) instead of trusting the format's location bits. A
+diff --git a/libs/video/rsx_fp_decompiler.c b/libs/video/rsx_fp_decompiler.c
+index cfb9685b..90b9458c 100644
+--- a/libs/video/rsx_fp_decompiler.c
++++ b/libs/video/rsx_fp_decompiler.c
+@@ -1379,6 +1379,14 @@ int rsx_fp_decompile_buffered_ex(
+         out_constant_count);
+ }
+ 
++int rsx_fp_decompile_shadow_ex(
++    const u8* ucode, u32 max_bytes, u32 ctrl, u32 tex_cube_mask,
++    const rsx_fp_shadow_desc shadow[16], char* out, u32 out_size)
++{
++    return rsx_fp_decompile_internal(ucode, max_bytes, ctrl, tex_cube_mask, 0,
++        0, shadow, NULL, NULL, out, out_size, NULL);
++}
++
+ int rsx_fp_decompile_buffered_shadow_ex(
+     const u8* ucode, u32 max_bytes, u32 ctrl, u32 tex_cube_mask,
+     const rsx_fp_shadow_desc shadow[16],
+diff --git a/libs/video/rsx_fp_decompiler.h b/libs/video/rsx_fp_decompiler.h
+index e55bcc19..2f2e1ccc 100644
+--- a/libs/video/rsx_fp_decompiler.h
++++ b/libs/video/rsx_fp_decompiler.h
+@@ -148,6 +148,9 @@ typedef struct rsx_fp_shadow_desc {
+ void rsx_fp_shadow_desc_from_texture(rsx_fp_shadow_desc* out, u32 format,
+     u32 dimension, u32 cube, u32 mips, u32 filter, u32 address, u32 control0);
+ u32 rsx_fp_texture_units(const u8* ucode, u32 max_bytes);
++int rsx_fp_decompile_shadow_ex(
++    const u8* ucode, u32 max_bytes, u32 ctrl, u32 tex_cube_mask,
++    const rsx_fp_shadow_desc shadow[16], char* out, u32 out_size);
+ int rsx_fp_decompile_buffered_shadow_ex(
+     const u8* ucode, u32 max_bytes, u32 ctrl, u32 tex_cube_mask,
+     const rsx_fp_shadow_desc shadow[16],
