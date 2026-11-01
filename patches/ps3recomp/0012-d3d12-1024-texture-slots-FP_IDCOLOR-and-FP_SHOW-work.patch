@@ -1,0 +1,124 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: DrummingBird1 <1979036+DrummingBird1@users.noreply.github.com>
+Date: Sun, 1 Nov 2026 02:52:34 +0200
+Subject: [PATCH] d3d12: 1024 texture slots; FP_IDCOLOR and FP_SHOW work again
+
+A town frame binds 340+ textures and there were 192 slots, so the draws left
+over sampled a null SRV and came out black, a different set each frame, and the
+evicted ones were uploaded again. FP_IDCOLOR and FP_SHOW searched for an output
+line the decompiler no longer emits and silently did nothing.
+---
+ libs/video/rsx_d3d12_backend.c | 78 ++++++++++++++++------------------
+ 1 file changed, 37 insertions(+), 41 deletions(-)
+
+diff --git a/libs/video/rsx_d3d12_backend.c b/libs/video/rsx_d3d12_backend.c
+index 81a0eaf7..20782298 100644
+--- a/libs/video/rsx_d3d12_backend.c
++++ b/libs/video/rsx_d3d12_backend.c
+@@ -215,7 +215,7 @@ typedef struct {
+  * so every draw past the fourth got slot -1 from vp_upload_tex_slot ("out of
+  * slots") and drew UNTEXTURED. That reads as a correctly-lit but solid black
+  * object, which is indistinguishable from a missing texture upload. */
+-#define VP_TEX_SLOTS 192
++#define VP_TEX_SLOTS 1024   /* Sonic the Hedgehog: 340+ a frame in the town */
+ /* Guest texture uploads are staged in one persistently mapped upload buffer,
+  * a part per frame in flight, reset when that frame's command allocator is
+  * (the GPU has finished its copies by then). A committed upload buffer per
+@@ -1979,7 +1979,7 @@ static int vp_get_vs(const rsx_state* st)
+     static char hlsl[262144];
+     int ni = rsx_vp_decompile(vuc, vlen, hlsl, sizeof hlsl);
+     if (ni <= 0) return -1;
+-    if (getenv("VP_DUMP")) { static int _d=0; if (PS3_LOG_FIRST(_d, 4)) {
++    if (getenv("VP_DUMP")) { static int _d=0; if (PS3_LOG_FIRST(_d, atoi(getenv("VP_DUMP")) > 1 ? atoi(getenv("VP_DUMP")) : 4)) {
+         FILE* f = fopen("vp2_dump.hlsl", _d==1 ? "w" : "a");
+         if (f) { fprintf(f, "/* per-draw VS hash pending, %d instrs */%s%s", ni, hlsl, "\n"); fclose(f); } } }
+     /* RSX_DBG_VP=<hex tex0 offset>: write the vertex program belonging to the draws
+@@ -2577,19 +2577,19 @@ static ID3D12PipelineState* vp_get_fp_pso(int vs_idx, u32 fp_addr, u32 blend, in
+     { const char* sh = getenv("FP_SHOW");
+       const char* only = getenv("FP_TEX_FP");
+       if (sh && (!only || (u32)strtoul(only, NULL, 16) == fp_addr)) {
+-          char* rp = strstr(hlsl, "_po.c0 = ");
+-          if (rp) { char* semi = strchr(rp, ';');
+-            if (semi) {
+-                char rep[256];
+-                snprintf(rep, sizeof rep, "_po.c0 = float4((%s).xyz, 1.0)", sh);
+-                size_t newlen = strlen(rep), tail = strlen(semi) + 1;
+-                if ((size_t)(rp - hlsl) + newlen + tail < sizeof(hlsl)) {
+-                    memmove(rp + newlen, semi, tail);
+-                    memcpy(rp, rep, newlen);
+-                    fprintf(stderr, "[FPSHOW] fp=0x%X output replaced with %s%c",
+-                            fp_addr, sh, 10);
+-                }
+-            } }
++          char* rp = NULL;
++          for (char* q = strstr(hlsl, "    return "); q; q = strstr(q + 1, "    return ")) rp = q;
++          if (rp) {
++              char rep[256];
++              snprintf(rep, sizeof rep, strstr(hlsl, "PSOutput _out") ?
++                       "    _out.t0 = float4((%s).xyz, 1.0); return _out;\n}\n" :
++                       "    return float4((%s).xyz, 1.0);\n}\n", sh);
++              if ((size_t)(rp - hlsl) + strlen(rep) < sizeof(hlsl)) {
++                  strcpy(rp, rep);
++                  fprintf(stderr, "[FPSHOW] fp=0x%X output replaced with %s%c",
++                          fp_addr, sh, 10);
++              }
++          }
+       } }
+     /* Retarget the samplers the guest bound as CUBE textures. The decompiler
+      * always emits 2D samplers; a cube is sampled with a 3-component direction
+@@ -2616,33 +2616,29 @@ static ID3D12PipelineState* vp_get_fp_pso(int vs_idx, u32 fp_addr, u32 blend, in
+     /* FP_IDCOLOR=1: give every fragment program a distinct flat colour derived
+      * from its address. One frame then shows which program paints which surface,
+      * instead of one run per candidate to test them by elimination. */
+-    if (getenv("FP_IDCOLOR")) {
+-        char* rp = strstr(hlsl, "_po.c0 = ");
++    if (getenv("FP_IDCOLOR") && !(getenv("FP_IDCOLOR_SKIP") &&
++        (fp_addr >> 20) == strtoul(getenv("FP_IDCOLOR_SKIP"), NULL, 16))) {
++        /* The program ends in "return _out;" (several targets) or "return r[0];".
++         * Mix properly: every fp address in a title tends to share low bits, so
++         * a single multiply left one channel constant across all programs.
++         * Force the top bit on in each channel: near black is indistinguishable
++         * from "this surface was never painted", the question this mode answers. */
++        u32 hsh = fp_addr * 2654435761u;
++        hsh ^= hsh >> 13; hsh *= 0x5BD1E995u; hsh ^= hsh >> 15;
++        float cr = (float)(((hsh >> 16) & 0x7F) | 0x80) / 255.0f;
++        float cg = (float)(((hsh >>  8) & 0x7F) | 0x80) / 255.0f;
++        float cb = (float)(((hsh      ) & 0x7F) | 0x80) / 255.0f;
++        char* rp = NULL;
++        for (char* q = strstr(hlsl, "    return "); q; q = strstr(q + 1, "    return ")) rp = q;
+         if (rp) {
+-            char* semi = strchr(rp, ';');
+-            if (semi) {
+-                /* Mix properly: every fp address in a title tends to share low
+-                 * bits (they all end 0x01/0x81 here), so a single multiply left
+-                 * one channel constant across all programs and made distinct
+-                 * shaders look like the same colour. */
+-                u32 hsh = fp_addr * 2654435761u;
+-                hsh ^= hsh >> 13; hsh *= 0x5BD1E995u; hsh ^= hsh >> 15;
+-                /* Force the top bit on in each channel: a hash that happens to
+-                 * land near black is indistinguishable from "this surface was
+-                 * never painted", which is the exact question the mode exists
+-                 * to answer. */
+-                float cr = (float)(((hsh >> 16) & 0x7F) | 0x80) / 255.0f;
+-                float cg = (float)(((hsh >>  8) & 0x7F) | 0x80) / 255.0f;
+-                float cb = (float)(((hsh      ) & 0x7F) | 0x80) / 255.0f;
+-                char rep[128];
+-                snprintf(rep, sizeof rep, "_po.c0 = float4(%.3f,%.3f,%.3f,1.0)", cr, cg, cb);
+-                size_t newlen = strlen(rep), tail = strlen(semi) + 1;
+-                if ((size_t)(rp - hlsl) + newlen + tail < sizeof(hlsl)) {
+-                    memmove(rp + newlen, semi, tail);
+-                    memcpy(rp, rep, newlen);
+-                    fprintf(stderr, "[FPID] fp=0x%X -> rgb(%.0f,%.0f,%.0f)%c",
+-                            fp_addr, cr*255, cg*255, cb*255, 10);
+-                }
++            char rep[128];
++            snprintf(rep, sizeof rep, strstr(hlsl, "PSOutput _out") ?
++                     "    _out.t0 = float4(%.3f,%.3f,%.3f,1.0); return _out;\n}\n" :
++                     "    return float4(%.3f,%.3f,%.3f,1.0);\n}\n", cr, cg, cb);
++            if ((size_t)(rp - hlsl) + strlen(rep) < sizeof(hlsl)) {
++                strcpy(rp, rep);
++                fprintf(stderr, "[FPID] fp=0x%X -> rgb(%.0f,%.0f,%.0f)%c",
++                        fp_addr, cr*255, cg*255, cb*255, 10);
+             }
+         }
+     }
