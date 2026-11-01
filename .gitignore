@@ -72,3 +72,6 @@ Thumbs.db
 
 # Temporary trace hooks (tools/re/hook.py): never commit.
 src/zz_*
+
+# launcher settings of this machine
+launcher.local.json
