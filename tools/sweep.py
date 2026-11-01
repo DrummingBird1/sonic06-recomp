@@ -82,10 +82,11 @@ def main():
     ap.add_argument('pattern')
     ap.add_argument('--seconds', type=int, default=60)
     ap.add_argument('--env', action='append', default=[], help='KEY=VALUE for the run')
+    ap.add_argument('--step', type=int, default=1, help='every Nth match, for a sample')
     a = ap.parse_args()
     entries = load()
     pat = re.compile(a.pattern, re.I)
-    chosen = [e for e in entries if pat.search(' / '.join(path(e)))]
+    chosen = [e for e in entries if pat.search(' / '.join(path(e)))][::a.step]
     base = ROOT / 'work/sweep' / a.name
     base.mkdir(parents=True, exist_ok=True)
     rows = []
