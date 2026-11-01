@@ -1,0 +1,36 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: DrummingBird1 <1979036+DrummingBird1@users.noreply.github.com>
+Date: Sun, 1 Nov 2026 09:19:59 +0200
+Subject: [PATCH] cellAtrac: GetStreamDataInfo is not an error for a file on
+ memory
+
+Sonic the Hedgehog calls it whenever the remaining-frame count is low, and -1
+(all on memory) is low. It stops a sound on an error, so every voice clip, which
+is loaded whole, ended after its first frame.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ libs/codec/cellAtrac.c | 5 +++--
+ 1 file changed, 3 insertions(+), 2 deletions(-)
+
+diff --git a/libs/codec/cellAtrac.c b/libs/codec/cellAtrac.c
+index 39f7b91d..2cb67841 100644
+--- a/libs/codec/cellAtrac.c
++++ b/libs/codec/cellAtrac.c
+@@ -294,13 +294,14 @@ s32 cellAtracGetRemainFrame(u32 pHandle, u32 piRemainFrame)
+ 
+ /* Where the title should put the next chunk of a streamed file, how much of it
+  * fits, and the file offset to read it from. Always the start of its buffer:
+- * AddStreamData copies a chunk out as soon as it is added. */
++ * AddStreamData copies a chunk out as soon as it is added. A file that is all on
++ * memory just has nothing writable: Sonic the Hedgehog calls this whenever the
++ * remaining-frame count is low, -1 included, and stops a sound on an error. */
+ s32 cellAtracGetStreamDataInfo(u32 pHandle, u32 ppucWritePointer, u32 puiWritableByte,
+                                u32 puiReadPosition)
+ {
+     AtracSlot* s = slot_of(pHandle);
+     if (!s) return (s32)CELL_ATRAC_ERROR_UNSET_DATA;
+-    if (!s->stream) return (s32)CELL_ATRAC_ERROR_ALLDATA_IS_ONMEMORY;
+     const u32 left = s->file_bytes - s->have;
+     if (ppucWritePointer) vm_write32(ppucWritePointer, s->buf_ea);
+     if (puiWritableByte) vm_write32(puiWritableByte, left < s->buf_bytes ? left : s->buf_bytes);

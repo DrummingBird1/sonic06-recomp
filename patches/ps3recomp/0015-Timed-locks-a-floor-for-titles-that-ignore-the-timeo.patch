@@ -1,0 +1,68 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: DrummingBird1 <1979036+DrummingBird1@users.noreply.github.com>
+Date: Sun, 1 Nov 2026 08:58:29 +0200
+Subject: [PATCH] Timed locks: a floor for titles that ignore the timeout
+
+PS3_LOCK_TIMEOUT_MIN_US raises shorter sys_mutex and sys_lwmutex timeouts.
+A title can lock for a few hundred microseconds and ignore the result, which
+is safe on a console where its thread outranks the holder. Here the holder can
+lose its core for that long, and the title goes on without the lock.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ runtime/ppu/ppu_sysprx.cpp   |  3 ++-
+ runtime/syscalls/sys_mutex.c | 17 ++++++++++++++++-
+ 2 files changed, 18 insertions(+), 2 deletions(-)
+
+diff --git a/runtime/ppu/ppu_sysprx.cpp b/runtime/ppu/ppu_sysprx.cpp
+index ae18ee30..7ce40114 100644
+--- a/runtime/ppu/ppu_sysprx.cpp
++++ b/runtime/ppu/ppu_sysprx.cpp
+@@ -258,6 +258,7 @@ static void lwm_release(struct LwmSlot* sl)
+ volatile int g_nd_inpump = 0;
+ /* syscalls/sys_ppu_thread.c: this thread is about to wait (PS3_PRIO_START). */
+ extern "C" void ppu_thread_note_block(uint64_t tid);
++extern "C" uint64_t lv2_lock_timeout(uint64_t timeout_us);   /* syscalls/sys_mutex.c */
+ static void sys_lwmutex_lock(ppu_context* ctx)
+ {
+     uint32_t lwm = (uint32_t)ctx->gpr[3];
+@@ -267,7 +268,7 @@ static void sys_lwmutex_lock(ppu_context* ctx)
+      * (e.g. LBP's resource loader locks with a 2s timeout in a retry loop so a
+      * contended lock yields to other threads instead of hard-blocking). We had
+      * been ignoring r4 and always waiting INFINITE, which defeats that pattern. */
+-    uint64_t timeout_us = ctx->gpr[4];
++    uint64_t timeout_us = lv2_lock_timeout(ctx->gpr[4]);
+     struct LwmSlot* sl0 = lwm_slot(lwm);
+     if (sl0) {
+         /* Recursive re-lock by the current holder: bump the count, no wait.
+diff --git a/runtime/syscalls/sys_mutex.c b/runtime/syscalls/sys_mutex.c
+index ed427714..2eff8817 100644
+--- a/runtime/syscalls/sys_mutex.c
++++ b/runtime/syscalls/sys_mutex.c
+@@ -250,10 +250,25 @@ static void mutex_watch_leave(int slot)
+ }
+ #endif
+ 
++/* PS3_LOCK_TIMEOUT_MIN_US raises a shorter timed lock to that many microseconds.
++ * A title can take a lock for a few hundred microseconds and ignore the result,
++ * safe on a console where its thread outranks the holder. Here both run at
++ * once, the holder can lose its core for longer than that, and the title goes
++ * on without the lock. */
++uint64_t lv2_lock_timeout(uint64_t timeout_us)
++{
++    static long long floor_us = -1;
++    if (floor_us < 0) {
++        const char* e = getenv("PS3_LOCK_TIMEOUT_MIN_US");
++        floor_us = e ? atoll(e) : 0;
++    }
++    return timeout_us && timeout_us < (uint64_t)floor_us ? (uint64_t)floor_us : timeout_us;
++}
++
+ int64_t sys_mutex_lock(ppu_context* ctx)
+ {
+     uint32_t mutex_id    = LV2_ARG_U32(ctx, 0);
+-    uint64_t timeout_us  = LV2_ARG_U64(ctx, 1);
++    uint64_t timeout_us  = lv2_lock_timeout(LV2_ARG_U64(ctx, 1));
+     if (mutex_id == 0 || mutex_id > SYS_MUTEX_MAX)
+         return (int64_t)(int32_t)CELL_ESRCH;
+ 

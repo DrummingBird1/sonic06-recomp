@@ -43,6 +43,14 @@ static void sonic06_config(void)
      * forever. */
     set_default("SPU_CH_BLOCK", "1");
 
+    /* libmixer's cond handshake with its strip threads locks for 100 us and
+     * ignores the result (0x134DEB0). On hardware its priority makes that safe.
+     * Here the holder can lose its core for longer, the lock times out, the
+     * signal goes out while the strip thread is on its way to the wait, and
+     * both then wait forever: every sound stops for the rest of the run. No
+     * lock in this title with a timeout is held that long on purpose. */
+    set_default("PS3_LOCK_TIMEOUT_MIN_US", "1000000");
+
     /* The frame loop waits on a semaphore that the flip handler posts, and
      * runs one fixed 1/60 s step per frame. cellGcm also calls the flip handler
      * when a flip is requested, so the semaphore was always open and the game
