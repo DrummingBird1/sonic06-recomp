@@ -18,6 +18,8 @@ from PIL import Image, ImageDraw
 
 sys.path.insert(0, 'tools/re')
 from stagelist import load, path, presses
+sys.path.insert(0, 'tools')
+import audio_gaps
 
 FFMPEG = r'<FFmpeg folder>'
 ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -51,7 +53,8 @@ def run_entry(entries, entry, out, seconds, extra=()):
     budget = [ln for ln in text.splitlines() if ln.startswith('[BUDGET]') and ln.split()[-2] != '0']
     sound = sorted(set(re.findall(r"/sound/([\w./-]+\.at3)'", text)))
     return dict(log=log.name, crash=text.count('[CRASH]'), flips=flips[-1][0] if flips else '0',
-                stills=len(list(out.glob('*.bmp'))), trunc=len(budget), sound=sound, loud=loudness(wav))
+                stills=len(list(out.glob('*.bmp'))), trunc=len(budget), sound=sound, loud=loudness(wav),
+                gaps=audio_gaps.count(wav) if wav.exists() else -1)
 
 
 def loudness(wav):
@@ -99,7 +102,7 @@ def main():
                 old.unlink()
             r = run_entry(entries, e, out, a.seconds + presses(entries, e)[-1][0], a.env)
             line = (f'{i:3d} crash={r["crash"]} flips={r["flips"]} stills={r["stills"]} '
-                    f'trunc={r["trunc"]} sound={r["loud"]} {label} {r["log"]} {" ".join(r["sound"])}')
+                    f'trunc={r["trunc"]} gaps={r["gaps"]} sound={r["loud"]} {label} {r["log"]} {" ".join(r["sound"])}')
             print(line, flush=True)
             rep.write(line + '\n')
             rep.flush()
