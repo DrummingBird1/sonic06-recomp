@@ -58,4 +58,12 @@ static void sonic06_config(void)
      * screen's 30 s idle timer ran out before START could be pressed. With this
      * the handler only runs when the flip completes on the 60 Hz beat. */
     set_default("GCM_FLIPCB_ONTICK", "1");
+
+    /* The FIFO walker sleeps up to this long when it has drained everything,
+     * unless a dry fence poll kicks it. The main thread here waits in a 1 ms
+     * usleep poll instead, so new commands sat for up to 4 ms before the RSX
+     * saw them, on every hand-off between the two, and the first scene ran
+     * 25.8 flips/s against 28.4 at 1 ms (5 alternating pairs, PHASE1.md
+     * section 40). */
+    set_default("GCM_TICK_MS", "1");
 }

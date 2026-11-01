@@ -1,0 +1,78 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: DrummingBird1 <1979036+DrummingBird1@users.noreply.github.com>
+Date: Mon, 2 Nov 2026 01:03:41 +0200
+Subject: [PATCH] D3D12 PERF: time the GPU drain and Present on their own
+
+PERF=1 counted the wait_for_gpu at the start of render_frame as render
+time and Present plus the frame fence as guest time, so the report could
+not say whether the walker thread waits on the GPU, on the display or on
+the title. Two more columns, gpu-wait and present. In Sonic 06's first
+scene both are 0-2% of the frame: neither is what holds the rate.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ libs/video/rsx_d3d12_backend.c | 14 +++++++++++---
+ 1 file changed, 11 insertions(+), 3 deletions(-)
+
+diff --git a/libs/video/rsx_d3d12_backend.c b/libs/video/rsx_d3d12_backend.c
+index 413160af..db43bf61 100644
+--- a/libs/video/rsx_d3d12_backend.c
++++ b/libs/video/rsx_d3d12_backend.c
+@@ -534,6 +534,7 @@ static u32 s_duck_off = 0;   /* as RESOLVED (what the uploader sees)   */
+  * spend an afternoon optimising the wrong loop. */
+ static double s_perf_tex = 0.0, s_perf_frame = 0.0, s_perf_vtx = 0.0, s_perf_rf = 0.0;
+ static double s_perf_gpu = 0.0, s_perf_pre = 0.0, s_perf_srv = 0.0, s_perf_pso = 0.0;
++static double s_perf_wait = 0.0, s_perf_present = 0.0;   /* GPU drain at frame start; Present + fence */
+ static int s_perf_pso_calls = 0, s_perf_pso_miss = 0, s_perf_pso_hashbytes = 0;
+ static u64    s_perf_nverts = 0;
+ static u64    s_perf_texbytes = 0;
+@@ -4591,7 +4592,9 @@ static void render_frame(void)
+      * (gcm/cube: triangles mixing stale and new vertices -> missing/sliver
+      * polygons). These workloads are a few draws/frame, so full serialisation
+      * costs little. */
+-    wait_for_gpu();
++    { double _w0 = perf_on() ? perf_now() : 0.0;
++      wait_for_gpu();
++      if (perf_on()) s_perf_wait += perf_now() - _w0; }
+     rdoc_frame_begin(s_d3d.draw_count);
+ 
+     /* Compile the real vertex program once its microcode is captured, and keep
+@@ -5728,7 +5731,7 @@ static void render_frame(void)
+             double fr = s_perf_frame > 0 ? s_perf_frame : 1;
+             fprintf(stderr, "[PERF] %.2f fps | tex %.2fs (%.0f%%, %d calls) | vtx %.2fs"
+                             " (%.0f%%, %.0fk verts) | render_frame %.2fs (%.0f%%)"
+-                            " | prepass %.2fs (%.0f%%) [srv %.2fs %.0f%% | pso %.2fs %.0f%% %d calls %d MISS %dKB hashed] | guest %.2fs (%.0f%%)%c",
++                            " | prepass %.2fs (%.0f%%) [srv %.2fs %.0f%% | pso %.2fs %.0f%% %d calls %d MISS %dKB hashed] | guest %.2fs (%.0f%%) | gpu-wait %.2fs (%.0f%%) | present %.2fs (%.0f%%)%c",
+                     20.0 / fr,
+                     s_perf_tex, 100.0 * s_perf_tex / fr, s_perf_ntex,
+                     s_perf_vtx, 100.0 * s_perf_vtx / fr,
+@@ -5738,9 +5741,12 @@ static void render_frame(void)
+                     s_perf_srv, 100.0 * s_perf_srv / fr,
+                     s_perf_pso, 100.0 * s_perf_pso / fr,
+                     s_perf_pso_calls, s_perf_pso_miss, s_perf_pso_hashbytes / 1024,
+-                    fr - s_perf_rf, 100.0 * (fr - s_perf_rf) / fr, 10);
++                    fr - s_perf_rf, 100.0 * (fr - s_perf_rf) / fr,
++                    s_perf_wait, 100.0 * s_perf_wait / fr,
++                    s_perf_present, 100.0 * s_perf_present / fr, 10);
+             s_perf_frame = 0.0; s_perf_tex = 0.0; s_perf_vtx = 0.0; s_perf_rf = 0.0;
+             s_perf_gpu = 0.0; s_perf_pre = 0.0; s_perf_srv = 0.0; s_perf_pso = 0.0;
++            s_perf_wait = 0.0; s_perf_present = 0.0;
+             s_perf_pso_calls = 0; s_perf_pso_miss = 0; s_perf_pso_hashbytes = 0;
+             s_perf_ntex = 0; s_perf_texbytes = 0; s_perf_nverts = 0;
+         }
+@@ -6066,6 +6072,7 @@ skip_dump_consider: ;
+ 
+     /* Present, on the vblank unless D3D12_VSYNC=0: that one is for measuring a
+      * title past the display's rate. Skipped for an offscreen-only batch. */
++    double _p0 = perf_on() ? perf_now() : 0.0;
+     if (s_present_this_frame) {
+         if (!d3d12_vsync_off())
+             s_d3d.swap_chain->lpVtbl->Present(s_d3d.swap_chain, 1, 0);
+@@ -6076,6 +6083,7 @@ skip_dump_consider: ;
+     rdoc_frame_end();
+ 
+     move_to_next_frame();
++    if (perf_on()) s_perf_present += perf_now() - _p0;
+ 
+     s_d3d.frame_count++;
+ 

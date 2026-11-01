@@ -1,0 +1,36 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: DrummingBird1 <1979036+DrummingBird1@users.noreply.github.com>
+Date: Mon, 2 Nov 2026 01:03:41 +0200
+Subject: [PATCH] vblank ticker: GCM_TICK_MS sets the walker's idle wait
+
+The ticker waits up to 4 ms for a kick before draining the FIFO again,
+and only a dry fence poll kicks it. A title that waits for the RSX in a
+usleep loop or on a label never kicks, so its new commands sat for up to
+4 ms on every hand-off. GCM_TICK_MS=<n> makes the wait configurable; the
+default stays 4. Sonic 06's first scene: 25.8 flips/s at 4 ms, 28.4 at
+1 ms, over 5 alternating pairs with the same exe.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ runtime/ppu/tests/boot_main.cpp | 8 +++++++-
+ 1 file changed, 7 insertions(+), 1 deletion(-)
+
+diff --git a/runtime/ppu/tests/boot_main.cpp b/runtime/ppu/tests/boot_main.cpp
+index e20ae428..7635ec4f 100644
+--- a/runtime/ppu/tests/boot_main.cpp
++++ b/runtime/ppu/tests/boot_main.cpp
+@@ -497,7 +497,13 @@ static DWORD WINAPI vblank_ticker(LPVOID)
+          * fence still paid the whole tick. Waiting on it keeps the same 4 ms
+          * ceiling when nothing kicks, and drains on demand when something
+          * does. */
+-        cellGcm_fifo_kick_wait(4);
++        /* GCM_TICK_MS=<n>: the idle wait, for measuring how much of a frame
++         * is the walker noticing new commands late (only a dry fence poll
++         * kicks it; a title waiting in usleep or on a label does not). */
++        static int s_tick_ms = -1;
++        if (s_tick_ms < 0) { const char* e = getenv("GCM_TICK_MS"); s_tick_ms = e ? atoi(e) : 4;
++                             if (s_tick_ms < 0) s_tick_ms = 4; }
++        cellGcm_fifo_kick_wait((unsigned)s_tick_ms);
+         unsigned long long now = ps3_qpc_us();
+         int fired = 0;
+         while (now >= tick_t0 + tick_k * 1000000ull / 60 && fired < 240) {
