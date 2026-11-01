@@ -1,0 +1,375 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: DrummingBird1 <1979036+DrummingBird1@users.noreply.github.com>
+Date: Sun, 1 Nov 2026 12:42:43 +0200
+Subject: [PATCH] Vertex fetch: cached memory, and only the attributes a
+ program reads
+
+A heavy frame writes a million 256-byte vertices one component at a time into
+the write-combined upload heap, the worst case for it, and that held the RSX
+thread back while the GPU sat at 20 percent. The buffer moves to a WRITE_BACK
+custom heap in L0 (VPVB_UPLOAD=1 goes back), and rsx_fetch_vertex resolves each
+array once per draw and skips attributes rsx_vp_analyze_inputs says the program
+never reads.
+
+Sonic the Hedgehog's e0031 goes from 15-18 to 23-30 fps. VTX_FETCH_CHECK=1
+compares against rsx_fetch_attrib: 430 million vertices, no difference.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ libs/video/rsx_d3d12_backend.c |  67 +++++++++++++----
+ libs/video/rsx_vertex_fetch.c  | 130 +++++++++++++++++++++------------
+ libs/video/rsx_vertex_fetch.h  |  17 +++++
+ 3 files changed, 154 insertions(+), 60 deletions(-)
+
+diff --git a/libs/video/rsx_d3d12_backend.c b/libs/video/rsx_d3d12_backend.c
+index 0293ce66..24ca0664 100644
+--- a/libs/video/rsx_d3d12_backend.c
++++ b/libs/video/rsx_d3d12_backend.c
+@@ -235,6 +235,7 @@ typedef struct {
+     u32 hash;               /* FNV-1a of the ucode */
+     ID3DBlob* vs;
+     int uses_c03;
++    u32 inputs;             /* the attributes the program reads */
+ } VPVSEntry;
+ #define VP_VS_CACHE 128 /* wave uses 5+ distinct VPs; at 4 the cache
+                          * thrashed every frame and eviction shifted slots
+@@ -1398,9 +1399,23 @@ static int init_d3d12(u32 width, u32 height)
+          * MAX_VERTICES * 256 * 2 bytes and grows fast. */
+         fprintf(stderr, "[VPVB] per-frame vertex buffer: %llu MB (%u verts, x2 parity)%c",
+                 (unsigned long long)(bd.Width >> 20), (unsigned)MAX_VERTICES, 10);
+-        if (SUCCEEDED(s_d3d.device->lpVtbl->CreateCommittedResource(s_d3d.device, &hp,
++        /* Cached system memory, not the write-combined UPLOAD heap. A vertex is
++         * written one component at a time, 16 slots of them, which is the worst
++         * case for write combining: a million vertices a frame took the RSX
++         * thread 35 ms in Sonic the Hedgehog. VPVB_UPLOAD=1 goes back. */
++        D3D12_HEAP_PROPERTIES hv = {0};
++        hv.Type = D3D12_HEAP_TYPE_CUSTOM;
++        hv.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_WRITE_BACK;
++        hv.MemoryPoolPreference = D3D12_MEMORY_POOL_L0;
++        if (getenv("VPVB_UPLOAD") || FAILED(s_d3d.device->lpVtbl->CreateCommittedResource(s_d3d.device, &hv,
++                D3D12_HEAP_FLAG_NONE, &bd, D3D12_RESOURCE_STATE_GENERIC_READ, NULL,
++                &IID_ID3D12Resource, (void**)&s_d3d.vp_vb))) {
++            s_d3d.vp_vb = NULL;
++            s_d3d.device->lpVtbl->CreateCommittedResource(s_d3d.device, &hp,
+                 D3D12_HEAP_FLAG_NONE, &bd, D3D12_RESOURCE_STATE_GENERIC_READ, NULL,
+-                &IID_ID3D12Resource, (void**)&s_d3d.vp_vb)))
++                &IID_ID3D12Resource, (void**)&s_d3d.vp_vb);
++        }
++        if (s_d3d.vp_vb)
+             s_d3d.vp_vb->lpVtbl->Map(s_d3d.vp_vb, 0, &nr, &s_d3d.vp_vb_mapped);
+         else
+             fprintf(stderr, "[VPVB] ALLOCATION FAILED -- no VP geometry will render%c", 10);
+@@ -1951,6 +1966,7 @@ static u32 vp_hash_ucode(const u8* p, u32 n)
+     return h ? h : 1u;
+ }
+ 
++#include "rsx_vp_decompiler.h"
+ static int vp_get_vs(const rsx_state* st)
+ {
+     extern int rsx_vp_decompile(const uint8_t*, u32, char*, u32);
+@@ -1981,6 +1997,9 @@ static int vp_get_vs(const rsx_state* st)
+     static char hlsl[262144];
+     int ni = rsx_vp_decompile(vuc, vlen, hlsl, sizeof hlsl);
+     if (ni <= 0) return -1;
++    u32 vs_inputs = 0xFFFFu;
++    { rsx_vp_input_analysis ia;
++      if (rsx_vp_analyze_inputs(vuc, vlen, &ia) >= 0 && ia.exact) vs_inputs = ia.input_mask; }
+     if (getenv("VP_DUMP")) { static int _d=0; if (PS3_LOG_FIRST(_d, atoi(getenv("VP_DUMP")) > 1 ? atoi(getenv("VP_DUMP")) : 4)) {
+         FILE* f = fopen("vp2_dump.hlsl", _d==1 ? "w" : "a");
+         if (f) { fprintf(f, "/* per-draw VS hash pending, %d instrs */%s%s", ni, hlsl, "\n"); fclose(f); } } }
+@@ -2050,6 +2069,7 @@ static int vp_get_vs(const rsx_state* st)
+     }
+     s_d3d.vp_vs[slot].hash = hash;
+     s_d3d.vp_vs[slot].vs   = vb;
++    s_d3d.vp_vs[slot].inputs = vs_inputs;
+     s_d3d.vp_vs[slot].uses_c03 =
+         (strstr(hlsl, "vp_c[0]") || strstr(hlsl, "vp_c[1]") ||
+          strstr(hlsl, "vp_c[2]") || strstr(hlsl, "vp_c[3]")) ? 1 : 0;
+@@ -6478,17 +6498,32 @@ static void vs_arrays(const rsx_state* st, u32 prim, u32 count)
+     vs_attrs(st);
+ }
+ 
++static rsx_attrib_fetch s_vf[16];   /* this draw's arrays: vp_fetch_begin */
++static u32 s_vf_inputs;
++
++static void vp_fetch_begin(const rsx_state* state)
++{
++    const int vs = vp_get_vs(state);
++    s_vf_inputs = vs >= 0 ? s_d3d.vp_vs[vs].inputs | 1u : 0xFFFFu;
++    rsx_fetch_vertex_begin(state, s_vf_inputs, s_vf);
++}
++
+ static void read_vp_vertex(const rsx_state* state, u32 vi, VPSlot* out16)
+ {
+     if (s_vs_on > 0) s_vs.conv++;
+-    for (int i = 0; i < 16; i++) {
+-        rsx_fetch_attrib(state, i, vi, out16[i].v);
+-        if (i == 0) {
+-            const rsx_vertex_attrib* a = &state->vertex_attribs[0];
+-            u32 n = a->size ? a->size : 4; if (n > 4) n = 4;
+-            rsx_vtx_pos_dbg(state, out16[0].v, n);
++    rsx_fetch_vertex(state, s_vf, vi, (float(*)[4])out16);
++    rsx_vtx_pos_dbg(state, out16[0].v, 4);
++    /* VTX_FETCH_CHECK=1: compare with the attribute-by-attribute fetch. */
++    { static int chk = -1; if (chk < 0) chk = getenv("VTX_FETCH_CHECK") ? 1 : 0;
++      if (chk) { static unsigned long long n, bad; VPSlot fresh[16];
++        n++;
++        for (int i = 0; i < 16; i++) {
++            if (!((s_vf_inputs >> i) & 1u)) continue;
++            rsx_fetch_attrib(state, i, vi, fresh[i].v);
++            if (memcmp(&fresh[i], &out16[i], sizeof fresh[i])) { bad++; break; }
+         }
+-    }
++        if ((n & 0xFFFFF) == 0)
++            fprintf(stderr, "[vtx-fetch-check] %llu vertices, %llu mismatches\n", n, bad); } }
+ }
+ 
+ /* Per-draw vertex cache for the paths that expand one guest vertex into
+@@ -6505,9 +6540,10 @@ static void read_vp_vertex(const rsx_state* state, u32 vi, VPSlot* out16)
+ static VPSlot (*s_vc)[16];
+ static u32 s_vc_tag[VC_N], s_vc_gen[VC_N], s_vc_cur;
+ 
+-static void vc_begin_draw(void)
++static void vc_begin_draw(const rsx_state* state)
+ {
+     static int on = -1;
++    vp_fetch_begin(state);
+     if (on < 0) on = getenv("VTX_NOCACHE") ? 0 : 1;
+     if (!on) return;
+     if (!s_vc) s_vc = malloc(sizeof(*s_vc) * VC_N);
+@@ -6662,6 +6698,7 @@ static u32 upload_quads_vp(const rsx_state* state, u32 first, u32 count)
+     if (!state || !vm_base || !s_d3d.vp_vb_mapped) return 0;
+     if (!state->vertex_attribs[0].enabled) return 0;
+     vp_attrs_dbg(state);
++    vp_fetch_begin(state);
+     u32 quads = count / 4;
+     u32 maxv = (MAX_VERTICES * VP_VERT_STRIDE - s_d3d.vp_vb_offset) / VP_VERT_STRIDE;
+     if (quads * 6 > maxv) quads = maxv / 6;
+@@ -6705,6 +6742,7 @@ static u32 upload_tris_vp(const rsx_state* state, u32 first, u32 count)
+     VPSlot* out = (VPSlot*)((u8*)s_d3d.vp_vb_mapped
+         + (u64)s_d3d.vp_parity * MAX_VERTICES * VP_VERT_STRIDE + s_d3d.vp_vb_offset);
+     { double _tv = perf_on() ? perf_now() : 0.0;
++      vp_fetch_begin(state);
+       for (u32 k = 0; k < count; k++)
+           read_vp_vertex(state, first + k, &out[k*16]);
+       if (perf_on()) { s_perf_vtx += perf_now() - _tv; s_perf_nverts += count; } }
+@@ -6768,7 +6806,7 @@ static u32 upload_strip_vp(const rsx_state* state, u32 first, u32 count, int fan
+     VPSlot* out = (VPSlot*)((u8*)s_d3d.vp_vb_mapped
+         + (u64)s_d3d.vp_parity * MAX_VERTICES * VP_VERT_STRIDE + s_d3d.vp_vb_offset);
+     u32 o = 0;
+-    vc_begin_draw();
++    vc_begin_draw(state);
+     for (u32 t = 0; t < tris; t++) {
+         u32 i0 = fan ? 0 : t;
+         /* strip winding alternates per triangle to keep facing consistent */
+@@ -6812,7 +6850,7 @@ static u32 upload_quads_vp_indexed(const rsx_state* state, u32 first, u32 count)
+     VPSlot* out = (VPSlot*)((u8*)s_d3d.vp_vb_mapped
+         + (u64)s_d3d.vp_parity * MAX_VERTICES * VP_VERT_STRIDE + s_d3d.vp_vb_offset);
+     u32 o = 0;
+-    vc_begin_draw();
++    vc_begin_draw(state);
+     for (u32 q = 0; q < quads; q++) {
+         VPSlot c[4][16];
+         for (u32 k = 0; k < 4; k++)
+@@ -6884,6 +6922,7 @@ static u32 upload_tris_vp_ix(const rsx_state* state, u32 first, u32 count, int c
+     if (!state || !vm_base || !s_d3d.vp_vb_mapped || !s_d3d.vp_ib_mapped) return 0;
+     if (!state->vertex_attribs[0].enabled || !count) return 0;
+     if (s_d3d.vp_ib_offset + count > VP_MAX_INDICES) return 0;
++    vp_fetch_begin(state);
+     if (!s_ix_stamp) {
+         s_ix_stamp = (u32*)calloc(1u << 20, sizeof(u32));
+         s_ix_slot  = (u32*)malloc((1u << 20) * sizeof(u32));
+@@ -6943,7 +6982,7 @@ static u32 upload_tris_vp_indexed(const rsx_state* state, u32 first, u32 count)
+     VPSlot* out = (VPSlot*)((u8*)s_d3d.vp_vb_mapped
+         + (u64)s_d3d.vp_parity * MAX_VERTICES * VP_VERT_STRIDE + s_d3d.vp_vb_offset);
+     { double _tv = perf_on() ? perf_now() : 0.0;
+-      vc_begin_draw();
++      vc_begin_draw(state);
+       for (u32 k = 0; k < count; k++)
+           read_vp_vertex_cached(state, read_guest_index(state, first + k), &out[k*16]);
+       if (perf_on()) { s_perf_vtx += perf_now() - _tv; s_perf_nverts += count; } }
+@@ -7159,7 +7198,7 @@ static u32 upload_strip_vp_indexed(const rsx_state* state, u32 first, u32 count,
+     VPSlot* out = (VPSlot*)((u8*)s_d3d.vp_vb_mapped
+         + (u64)s_d3d.vp_parity * MAX_VERTICES * VP_VERT_STRIDE + s_d3d.vp_vb_offset);
+     u32 o = 0;
+-    vc_begin_draw();
++    vc_begin_draw(state);
+     for (u32 t = 0; t < tris; t++) {
+         u32 i0 = fan ? 0 : t;
+         u32 i1 = t + 1, i2 = t + 2;
+diff --git a/libs/video/rsx_vertex_fetch.c b/libs/video/rsx_vertex_fetch.c
+index bd31518d..c3edebc0 100644
+--- a/libs/video/rsx_vertex_fetch.c
++++ b/libs/video/rsx_vertex_fetch.c
+@@ -26,6 +26,58 @@ float rsx_rd_half_be(const u8* p)
+     float o; memcpy(&o, &f, 4); return o;
+ }
+ 
++static inline void decode_attrib(const u8* p, const rsx_vertex_attrib* a, u32 n, int idx,
++                                 float out[4])
++{
++    switch (a->type) {
++    case 2: /* CELL_GCM_VERTEX_F: float32 BE */
++        for (u32 k = 0; k < n; k++) out[k] = rsx_rd_bef(p + k * 4);
++        break;
++    case 3: /* SF: half float BE */
++        for (u32 k = 0; k < n; k++) out[k] = rsx_rd_half_be(p + k * 2);
++        break;
++    case 4: /* UB: u8 normalized [0,1] */
++        for (u32 k = 0; k < n; k++) out[k] = p[k] / 255.0f;
++        break;
++    case 1: /* S1: s16 normalized [-1,1] */
++        for (u32 k = 0; k < n; k++) {
++            s16 s = (s16)((p[k*2] << 8) | p[k*2+1]);
++            out[k] = (float)s / 32767.0f;
++        }
++        break;
++    case 5: /* S32K: s16 integer */
++        for (u32 k = 0; k < n; k++)
++            out[k] = (float)(s16)((p[k*2] << 8) | p[k*2+1]);
++        break;
++    case 6: /* CMP: one big-endian word, x and y signed 11 bits, z signed 10,
++             * normalized. It fell to the float default, so a mesh with
++             * compressed normals was lit from garbage. Same decode as
++             * rsx_vertex_compact.c and rsx_live_draw.c. */
++        {
++            const u32 w = ((u32)p[0] << 24) | ((u32)p[1] << 16) | ((u32)p[2] << 8) | p[3];
++            s32 x = (s32)(w & 0x7FF);          if (x & 0x400) x -= 0x800;
++            s32 y = (s32)((w >> 11) & 0x7FF); if (y & 0x400) y -= 0x800;
++            s32 z = (s32)((w >> 22) & 0x3FF); if (z & 0x200) z -= 0x400;
++            out[0] = (float)x / 1023.0f;
++            out[1] = (float)y / 1023.0f;
++            out[2] = (float)z / 511.0f;
++            out[3] = 1.0f;
++        }
++        break;
++    case 7: /* UB256: u8 unnormalized */
++        for (u32 k = 0; k < n; k++) out[k] = (float)p[k];
++        break;
++    default:
++        { static int t = -1; if (t < 0) t = getenv("VTX_TYPEDBG") ? 1 : 0;
++          if (t) { static u32 seen = 0;
++              if (!(seen & (1u << (a->type & 31)))) { seen |= 1u << (a->type & 31);
++                  fprintf(stderr, "[VTXTYPE] UNHANDLED type=%u attr=%d size=%u stride=%u\n",
++                          a->type, idx, a->size, a->stride); } } }
++        for (u32 k = 0; k < n; k++) out[k] = rsx_rd_bef(p + k * 4);
++        break;
++    }
++}
++
+ void rsx_fetch_attrib(const rsx_state* st, int idx, u32 vi, float out[4])
+ {
+     /* A disabled attribute array feeds the CONSTANT vertex attribute register
+@@ -76,52 +128,38 @@ void rsx_fetch_attrib(const rsx_state* st, int idx, u32 vi, float out[4])
+         ? cellGcmResolveLocated(0, off)   /* MAIN:  IO offset table          */
+         : cellGcmResolveLocated(1, off)); /* LOCAL: VRAM, never the IO table */
+ 
+-    u32 n = a->size ? a->size : 4; if (n > 4) n = 4;
+-    switch (a->type) {
+-    case 2: /* CELL_GCM_VERTEX_F: float32 BE */
+-        for (u32 k = 0; k < n; k++) out[k] = rsx_rd_bef(p + k * 4);
+-        break;
+-    case 3: /* SF: half float BE */
+-        for (u32 k = 0; k < n; k++) out[k] = rsx_rd_half_be(p + k * 2);
+-        break;
+-    case 4: /* UB: u8 normalized [0,1] */
+-        for (u32 k = 0; k < n; k++) out[k] = p[k] / 255.0f;
+-        break;
+-    case 1: /* S1: s16 normalized [-1,1] */
+-        for (u32 k = 0; k < n; k++) {
+-            s16 s = (s16)((p[k*2] << 8) | p[k*2+1]);
+-            out[k] = (float)s / 32767.0f;
+-        }
+-        break;
+-    case 5: /* S32K: s16 integer */
+-        for (u32 k = 0; k < n; k++)
+-            out[k] = (float)(s16)((p[k*2] << 8) | p[k*2+1]);
+-        break;
+-    case 6: /* CMP: one big-endian word, x and y signed 11 bits, z signed 10,
+-             * normalized. It fell to the float default, so a mesh with
+-             * compressed normals was lit from garbage. Same decode as
+-             * rsx_vertex_compact.c and rsx_live_draw.c. */
+-        {
+-            const u32 w = ((u32)p[0] << 24) | ((u32)p[1] << 16) | ((u32)p[2] << 8) | p[3];
+-            s32 x = (s32)(w & 0x7FF);          if (x & 0x400) x -= 0x800;
+-            s32 y = (s32)((w >> 11) & 0x7FF); if (y & 0x400) y -= 0x800;
+-            s32 z = (s32)((w >> 22) & 0x3FF); if (z & 0x200) z -= 0x400;
+-            out[0] = (float)x / 1023.0f;
+-            out[1] = (float)y / 1023.0f;
+-            out[2] = (float)z / 511.0f;
+-            out[3] = 1.0f;
++    decode_attrib(p, a, a->size ? (a->size > 4 ? 4 : a->size) : 4, idx, out);
++}
++
++void rsx_fetch_vertex_begin(const rsx_state* st, u32 inputs, rsx_attrib_fetch f[16])
++{
++    for (int i = 0; i < 16; i++) {
++        const rsx_vertex_attrib* a = &st->vertex_attribs[i];
++        f[i].a = a;
++        f[i].base = NULL;
++        f[i].offset = a->offset & 0x7FFFFFFFu;
++        f[i].page = 0xFFFFFFFFu;
++        f[i].n = a->size ? (a->size > 4 ? 4 : a->size) : 4;
++        f[i].local = (a->offset & 0x80000000u) ? 0 : 1;
++        f[i].mode = !((inputs >> i) & 1u) ? 3
++                  : (!a->enabled || a->stride == 0 || !vm_base) ? 0
++                  : rsx_vertex_freq_plain(a->frequency, (st->frequency_divider_op >> i) & 1u) ? 1 : 2;
++    }
++}
++
++void rsx_fetch_vertex(const rsx_state* st, rsx_attrib_fetch f[16], u32 vi, float out[16][4])
++{
++    for (int i = 0; i < 16; i++) {
++        rsx_attrib_fetch* e = &f[i];
++        if (e->mode == 3) continue;
++        memcpy(out[i], st->vertex_data4f[i], sizeof out[i]);
++        if (e->mode == 0) continue;
++        if (e->mode == 2) { rsx_fetch_attrib(st, i, vi, out[i]); continue; }
++        const u32 off = e->offset + vi * e->a->stride, page = off >> 20;
++        if (page != e->page) {
++            e->page = page;
++            e->base = vm_base + cellGcmResolveLocated(e->local, page << 20);
+         }
+-        break;
+-    case 7: /* UB256: u8 unnormalized */
+-        for (u32 k = 0; k < n; k++) out[k] = (float)p[k];
+-        break;
+-    default:
+-        { static int t = -1; if (t < 0) t = getenv("VTX_TYPEDBG") ? 1 : 0;
+-          if (t) { static u32 seen = 0;
+-              if (!(seen & (1u << (a->type & 31)))) { seen |= 1u << (a->type & 31);
+-                  fprintf(stderr, "[VTXTYPE] UNHANDLED type=%u attr=%d size=%u stride=%u\n",
+-                          a->type, idx, a->size, a->stride); } } }
+-        for (u32 k = 0; k < n; k++) out[k] = rsx_rd_bef(p + k * 4);
+-        break;
++        decode_attrib(e->base + (off & 0xFFFFFu), e->a, e->n, i, out[i]);
+     }
+ }
+diff --git a/libs/video/rsx_vertex_fetch.h b/libs/video/rsx_vertex_fetch.h
+index a52a2e14..ac621f0b 100644
+--- a/libs/video/rsx_vertex_fetch.h
++++ b/libs/video/rsx_vertex_fetch.h
+@@ -68,6 +68,23 @@ float rsx_rd_half_be(const u8* p);  /* 2-byte IEEE half -> float  */
+  */
+ void rsx_fetch_attrib(const rsx_state* st, int idx, u32 vi, float out[4]);
+ 
++/* All 16 attributes of one vertex, the same as 16 rsx_fetch_attrib calls but
++ * without working each array out again for every vertex: a heavy frame fetches
++ * a million vertices, and that was over half of the RSX thread's time.
++ * rsx_fetch_vertex_begin takes the attribute state of one draw, so it runs again
++ * for every draw. The address translation is kept per 1 MB, the IO page size.
++ * `inputs` has a bit for each attribute the draw's vertex program reads; the
++ * others are left unwritten. */
++typedef struct rsx_attrib_fetch {
++    const rsx_vertex_attrib* a;
++    const u8* base;   /* host address of the window `page` */
++    u32 offset, page, n;
++    int local;
++    int mode;         /* 0 constant register, 1 array, 2 array with a divisor, 3 not read */
++} rsx_attrib_fetch;
++void rsx_fetch_vertex_begin(const rsx_state* st, u32 inputs, rsx_attrib_fetch f[16]);
++void rsx_fetch_vertex(const rsx_state* st, rsx_attrib_fetch f[16], u32 vi, float out[16][4]);
++
+ #ifdef __cplusplus
+ }
+ #endif
