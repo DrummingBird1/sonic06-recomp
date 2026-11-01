@@ -1,0 +1,110 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: DrummingBird1 <1979036+DrummingBird1@users.noreply.github.com>
+Date: Sun, 1 Nov 2026 10:53:17 +0200
+Subject: [PATCH] D3D12 backend: frame limits, and no present of an empty batch
+
+Scene e0031 in Sonic the Hedgehog needs about 1.06M vertices and 2770 draw
+records. The limits were 393216 and 2048, and a full buffer silently drops the
+rest of the frame. Post-processing comes last, so the frame went out black.
+FRAME_BUDGET now reports peaks and truncated frames, not the first 40 frames.
+
+An empty batch at a flip is a flip/drain race and wiped the screen for a frame;
+the clear boundary already held it back, d3d12_present did not. And both display
+gates took a depth-only draw for a draw to the display, because a shadow map
+sits at offset 0 too.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ libs/video/rsx_d3d12_backend.c | 48 ++++++++++++++++++++--------------
+ 1 file changed, 29 insertions(+), 19 deletions(-)
+
+diff --git a/libs/video/rsx_d3d12_backend.c b/libs/video/rsx_d3d12_backend.c
+index 20782298..0293ce66 100644
+--- a/libs/video/rsx_d3d12_backend.c
++++ b/libs/video/rsx_d3d12_backend.c
+@@ -56,11 +56,13 @@
+  * -----------------------------------------------------------------------*/
+ 
+ #define FRAME_COUNT         2   /* double buffering */
+-#define MAX_VERTICES    393216  /* per-frame vertex buffer (dbgfont submits
+-                                 * ~7.5k verts/frame; leave generous headroom) */
+-#define VP_MAX_INDICES  (1u << 21)  /* per-frame index buffer of indexed VP draws, x2 parity */
+-#define MAX_DRAWS         2048  /* per-frame draw records. Sized from the
+-                                 * measured worst case (~1841, FRAME_BUDGET);
++#define MAX_VERTICES    (3u << 19)  /* per-frame vertex buffer. Filling it drops the rest
++                                 * of the frame, and post-processing comes last, so
++                                 * the frame goes out black: Sonic the Hedgehog's
++                                 * e0031 needed more than the old 393216. */
++#define VP_MAX_INDICES  (1u << 22)  /* per-frame index buffer of indexed VP draws, x2 parity */
++#define MAX_DRAWS         8192  /* per-frame draw records. Sized from the
++                                 * measured worst case (over 2048 in e0031, FRAME_BUDGET);
+                                  * the per-draw constant buffer is
+                                  * VP_CB_STRIDE * MAX_DRAWS * 2 bytes, so 16384
+                                  * asked for a 264 MB upload allocation. */
+@@ -5632,11 +5634,17 @@ static void render_frame(void)
+      * it silently produced nothing in exactly the configuration being used. */
+     { static int fb = -1;
+       if (fb < 0) { const char* e = getenv("FRAME_BUDGET"); fb = e ? atoi(e) : 0; }
+-      if (fb && s_req_draws) { static int n = 0; if (PS3_LOG_FIRST(n, 40))
+-        fprintf(stderr, "[BUDGET] frame: requested %llu verts / %llu draws, "
+-                        "buffer holds %u verts, %llu draws truncated%c",
+-                (unsigned long long)s_req_verts, (unsigned long long)s_req_draws,
+-                MAX_VERTICES, (unsigned long long)s_drop_draws, 10); }
++      /* Peaks and truncated frames: the first frames of a run are only a logo. */
++      if (fb) { static int n = 0; static u32 s_peak_v = 0, s_peak_i = 0;
++        const u32 used = s_d3d.vp_vb_offset / (16u * 16u);
++        if ((s_drop_draws || used > s_peak_v || s_d3d.vp_ib_offset > s_peak_i) && PS3_LOG_FIRST(n, 400))
++            fprintf(stderr, "[BUDGET] frame: %u of %u verts, %u of %u indices, %u records, "
++                            "list path asked %llu verts in %llu draws, %llu truncated%c",
++                    used, (u32)MAX_VERTICES, s_d3d.vp_ib_offset, (u32)VP_MAX_INDICES, s_d3d.draw_count,
++                    (unsigned long long)s_req_verts, (unsigned long long)s_req_draws,
++                    (unsigned long long)s_drop_draws, 10);
++        if (used > s_peak_v) s_peak_v = used;
++        if (s_d3d.vp_ib_offset > s_peak_i) s_peak_i = s_d3d.vp_ib_offset; }
+       s_req_verts = 0; s_req_draws = 0; s_drop_draws = 0; }
+     if (perf_on()) {
+         static double s_t_prev = 0.0; static int s_n = 0;
+@@ -6051,6 +6059,12 @@ static u32 s_dbg_clears_since_present = 0;   /* CELLMARK_BLINKDBG */
+ static u32 s_clear_presents = 0;   /* presents issued at clear (frame boundary) */
+ static unsigned s_last_clear_boundary_flip = 0;
+ static unsigned s_last_clear_presented_flip = 0;
++/* An empty batch presents only until the first real frame. After that, an empty
++ * batch at a flip or a clear boundary is a flip/drain race, the previous batch
++ * having taken this frame's draws too: presenting it wipes the screen for a frame
++ * (wave: black flashes and layout flicker; Sonic the Hedgehog: single black
++ * frames in a stage). */
++static int s_seen_content = 0;
+ 
+ /* FRAME_BUDGET=1: how much geometry a guest frame actually asks for, versus
+  * what the per-frame vertex buffer can hold. A frame that overflows is silently
+@@ -6078,10 +6092,10 @@ static void d3d12_present(void* ud, u32 buffer_id)
+      * offscreen pass work only (demosaic flips once per effect pass): showing
+      * it would strobe the bare backbuffer clear. Keep accumulating -- the
+      * composite draw that targets the display presents the whole chain, in
+-     * order, in one command list. Empty batches still present (boot/idle). */
+-    int flip_has_display = (s_d3d.draw_count == 0);
++     * order, in one command list. */
++    int flip_has_display = (s_d3d.draw_count == 0 && !s_seen_content);
+     for (u32 _i = 0; _i < s_d3d.draw_count && _i < MAX_DRAWS; _i++)
+-        if (!s_d3d.draws[_i].is_clear && s_d3d.draws[_i].rt_off == 0) {
++        if (!s_d3d.draws[_i].is_clear && s_d3d.draws[_i].rt_off == 0 && !s_d3d.draws[_i].no_color) {
+             flip_has_display = 1;
+             break;
+         }
+@@ -7916,14 +7930,10 @@ void rsx_d3d12_backend_present(void)
+     }
+ 
+     /* Same display gate as d3d12_present: a batch of offscreen pass work only
+-     * (render-to-texture) keeps accumulating until its composite arrives.
+-     * Empty batches present only until the first real frame -- after that an
+-     * empty present is a flip/drain race and wipes the screen for a frame
+-     * (wave: black flashes and layout flicker between frames). */
+-    static int s_seen_content = 0;
++     * (render-to-texture) keeps accumulating until its composite arrives. */
+     int has_display = (s_d3d.draw_count == 0 && !s_seen_content);
+     for (u32 _i = 0; _i < s_d3d.draw_count && _i < MAX_DRAWS; _i++)
+-        if (!s_d3d.draws[_i].is_clear && s_d3d.draws[_i].rt_off == 0) {
++        if (!s_d3d.draws[_i].is_clear && s_d3d.draws[_i].rt_off == 0 && !s_d3d.draws[_i].no_color) {
+             has_display = 1;
+             break;
+         }
