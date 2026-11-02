@@ -75,3 +75,8 @@ src/zz_*
 
 # launcher settings of this machine
 launcher.local.json
+
+# The launcher's build output, and the tools it downloads (FFmpeg, ps3recomp).
+launcher/bin/
+launcher/obj/
+deps/

@@ -16,7 +16,10 @@ param(
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 $build = Join-Path $root 'build'
-$vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
+# -products *: a Build Tools install (what the launcher installs) is not a
+# "product" to vswhere by default, and the plain query finds nothing.
+$vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * `
+        -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
 $vcvars = Join-Path $vs 'VC\Auxiliary\Build\vcvars64.bat'
 $ninjaDir = Join-Path $vs 'Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja'
 $llvm = 'C:\Program Files\LLVM\bin'

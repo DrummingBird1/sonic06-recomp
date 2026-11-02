@@ -1,0 +1,74 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: DrummingBird1 <1979036+DrummingBird1@users.noreply.github.com>
+Date: Mon, 2 Nov 2026 20:16:11 +0200
+Subject: [PATCH] D3D12: window size, borderless fullscreen, and real pixels on
+ high DPI
+
+D3D12_WINDOW=<w>x<h> sets the window's client size and D3D12_FULLSCREEN=1
+opens a borderless window over the primary monitor; the swap chain stays
+at the guest's size and is stretched to the window. A launcher sets these
+from its display settings. The window now declares per-monitor DPI
+awareness, looked up by name so older Windows keeps the old behaviour:
+DPI-unaware, a 1600x900 window came out 2400x1350 at 150% scaling. With no
+D3D12_WINDOW the default size is scaled by the system DPI, so it looks as
+before.
+
+Checked on a 3840x2160 monitor at 150%: D3D12_WINDOW=1600x900 gives a
+1600x900 client area, D3D12_FULLSCREEN=1 a 3840x2160 borderless window,
+and the title screen draws in both.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ libs/video/rsx_d3d12_backend.c | 39 +++++++++++++++++++++++++++++++++-
+ 1 file changed, 38 insertions(+), 1 deletion(-)
+
+diff --git a/libs/video/rsx_d3d12_backend.c b/libs/video/rsx_d3d12_backend.c
+index 9db34714..47e66f0a 100644
+--- a/libs/video/rsx_d3d12_backend.c
++++ b/libs/video/rsx_d3d12_backend.c
+@@ -695,7 +695,44 @@ static HWND create_window(u32 width, u32 height, const char* title)
+     wc.lpszClassName = "ps3recomp_d3d12";
+     RegisterClassExA(&wc);
+ 
+-    RECT wr = {0, 0, (LONG)width, (LONG)height};
++    /* D3D12_WINDOW=<w>x<h>: the window's client size. The swap chain stays at
++     * the guest's size and is stretched to the window. D3D12_FULLSCREEN=1: a
++     * borderless window over the primary monitor instead. A launcher sets
++     * these from its display settings. */
++    /* Sizes are pixels: declare per-monitor DPI awareness first, or Windows
++     * scales a DPI-unaware window behind our back (at 150%, a 1600x900 window
++     * came out 2400x1350). Without D3D12_WINDOW the size still follows the
++     * Windows scale, as the window always looked. Looked up by name: both
++     * calls are Windows 10 1607+ and older systems just keep the old way. */
++    u32 cw = width, ch = height;
++    { typedef BOOL (WINAPI *set_ctx_fn)(HANDLE);
++      typedef UINT (WINAPI *dpi_fn)(void);
++      HMODULE u32dll = GetModuleHandleA("user32.dll");
++      set_ctx_fn set_ctx = u32dll ? (set_ctx_fn)(void*)GetProcAddress(u32dll, "SetProcessDpiAwarenessContext") : NULL;
++      dpi_fn sys_dpi = u32dll ? (dpi_fn)(void*)GetProcAddress(u32dll, "GetDpiForSystem") : NULL;
++      if (set_ctx && sys_dpi && set_ctx((HANDLE)(INT_PTR)-4 /* PER_MONITOR_AWARE_V2 */)) {
++          const UINT dpi = sys_dpi();
++          cw = width * dpi / 96; ch = height * dpi / 96;
++      } }
++    { const char* e = getenv("D3D12_WINDOW"); unsigned w = 0, h = 0;
++      if (e && sscanf(e, "%ux%u", &w, &h) == 2 && w >= 320 && h >= 180) { cw = w; ch = h; } }
++    { const char* e = getenv("D3D12_FULLSCREEN");
++      if (e && strcmp(e, "0")) {
++          const POINT origin = {0, 0};
++          MONITORINFO mi;
++          mi.cbSize = sizeof mi;
++          if (GetMonitorInfoA(MonitorFromPoint(origin, MONITOR_DEFAULTTOPRIMARY), &mi)) {
++              SetThreadExecutionState(ES_CONTINUOUS | ES_DISPLAY_REQUIRED | ES_SYSTEM_REQUIRED);
++              return CreateWindowExA(0, "ps3recomp_d3d12", title ? title : "ps3recomp (D3D12)",
++                                     WS_POPUP | WS_VISIBLE,
++                                     mi.rcMonitor.left, mi.rcMonitor.top,
++                                     mi.rcMonitor.right - mi.rcMonitor.left,
++                                     mi.rcMonitor.bottom - mi.rcMonitor.top,
++                                     NULL, NULL, GetModuleHandle(NULL), NULL);
++          }
++      } }
++
++    RECT wr = {0, 0, (LONG)cw, (LONG)ch};
+     AdjustWindowRect(&wr, WS_OVERLAPPEDWINDOW, FALSE);
+ 
+     /* Keep the display awake (see rsx_null_backend.c). */
