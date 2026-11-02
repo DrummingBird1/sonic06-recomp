@@ -1,0 +1,453 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: DrummingBird1 <1979036+DrummingBird1@users.noreply.github.com>
+Date: Mon, 2 Nov 2026 14:34:07 +0200
+Subject: [PATCH] Vertex fetch: SIMD conversion, streaming stores into the
+ vertex buffer
+
+In Sonic 06's first scene the indexed path converts about 11M vertices a
+second and that was 40% of the RSX thread, decode_attrib alone 28%. Two
+changes, measured per conversion with VTX_STATS (indexed upload ms/s over
+conversions/s), alternating runs of the same exe:
+
+- rsx_fetch_vertex converts four components at a time with SSE4.1, bit
+  for bit what decode_attrib gives (half floats keep its flush of
+  denormals and its exponent-31 mantissa). rsx_fetch_attrib keeps the
+  scalar decode, so VTX_FETCH_CHECK=1 compares the two on real frames:
+  532M vertices of the scene, 0 mismatches. tests/test_vertex_fetch_simd.c
+  checks random states and all 65536 halves. VTX_SCALAR=1 goes back.
+- rsx_fetch_vertex_stream writes all 16 slots with streaming stores, so a
+  vertex written into the upload heap no longer reads its lines from DRAM
+  first. The indexed path uses it; render_frame fences before executing.
+  VTX_NT=0 goes back.
+
+Alone, the SIMD conversion barely moved the cost (45/43 -> 37.7-44.3 ns over 4 runs): the
+stores were the wait. Streaming stores with the scalar decode: 37.5-37.9
+ns; both: 27.9-30.9 ns, from 43-45. The scene went from 27.7 to 28.5
+flips/s over 4 alternating pairs (3 of 4 faster); Wave Ocean stays at
+59.7-59.8. read_vp_vertex no longer calls rsx_vtx_pos_dbg per vertex
+unless VTX_POS is set.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ libs/video/rsx_d3d12_backend.c            |  33 ++++-
+ libs/video/rsx_vertex_fetch.c             | 148 ++++++++++++++++++++++
+ libs/video/rsx_vertex_fetch.h             |   8 ++
+ libs/video/tests/test_vertex_fetch_simd.c | 119 +++++++++++++++++
+ 4 files changed, 305 insertions(+), 3 deletions(-)
+ create mode 100644 libs/video/tests/test_vertex_fetch_simd.c
+
+diff --git a/libs/video/rsx_d3d12_backend.c b/libs/video/rsx_d3d12_backend.c
+index db43bf61..9db34714 100644
+--- a/libs/video/rsx_d3d12_backend.c
++++ b/libs/video/rsx_d3d12_backend.c
+@@ -41,6 +41,7 @@
+ 
+ /* D3D12 headers */
+ #include <d3d12.h>
++#include <xmmintrin.h>
+ #include <d3d12sdklayers.h>   /* ID3D12Debug / ID3D12InfoQueue */
+ #include <dxgi1_4.h>
+ #include <dxgi1_6.h>
+@@ -5915,7 +5916,9 @@ skip_dump_consider: ;
+         s_d3d.cmd_list->lpVtbl->ResourceBarrier(s_d3d.cmd_list, 1, &barrier);
+     }
+ 
+-    /* Close and execute */
++    /* Close and execute. The fence makes the vertex buffer's streaming stores
++     * (rsx_fetch_vertex_stream) visible before the GPU reads it. */
++    _mm_sfence();
+     s_d3d.cmd_list->lpVtbl->Close(s_d3d.cmd_list);
+     ID3D12CommandList* cmd_lists[] = {(ID3D12CommandList*)s_d3d.cmd_list};
+     s_d3d.cmd_queue->lpVtbl->ExecuteCommandLists(s_d3d.cmd_queue, 1, cmd_lists);
+@@ -6573,7 +6576,8 @@ static void read_vp_vertex(const rsx_state* state, u32 vi, VPSlot* out16)
+ {
+     if (s_vs_on > 0) s_vs.conv++;
+     rsx_fetch_vertex(state, s_vf, vi, (float(*)[4])out16);
+-    rsx_vtx_pos_dbg(state, out16[0].v, 4);
++    { static int pos = -1; if (pos < 0) pos = getenv("VTX_POS") ? 1 : 0;   /* a call per vertex otherwise */
++      if (pos) rsx_vtx_pos_dbg(state, out16[0].v, 4); }
+     /* VTX_FETCH_CHECK=1: compare with the attribute-by-attribute fetch. */
+     { static int chk = -1; if (chk < 0) chk = getenv("VTX_FETCH_CHECK") ? 1 : 0;
+       if (chk) { static unsigned long long n, bad; VPSlot fresh[16];
+@@ -6587,6 +6591,29 @@ static void read_vp_vertex(const rsx_state* state, u32 vi, VPSlot* out16)
+             fprintf(stderr, "[vtx-fetch-check] %llu vertices, %llu mismatches\n", n, bad); } }
+ }
+ 
++/* read_vp_vertex straight into the vertex buffer, which the CPU never reads
++ * back: streaming stores, so writing a vertex no longer reads its four lines
++ * from DRAM first. The indexed path converts 10M vertices a second in the first
++ * story scene. VTX_NT=0 goes back to ordinary stores. */
++static void read_vp_vertex_vb(const rsx_state* state, u32 vi, VPSlot* out16)
++{
++    static int nt = -1;
++    if (nt < 0) { const char* e = getenv("VTX_NT"); nt = !(e && !strcmp(e, "0")); }
++    if (!nt) { read_vp_vertex(state, vi, out16); return; }
++    if (s_vs_on > 0) s_vs.conv++;
++    rsx_fetch_vertex_stream(state, s_vf, vi, (float(*)[4])out16);
++    { static int chk = -1; if (chk < 0) chk = getenv("VTX_FETCH_CHECK") ? 1 : 0;
++      if (chk) { static unsigned long long n, bad; VPSlot fresh[16];
++        _mm_sfence(); n++;
++        for (int i = 0; i < 16; i++) {
++            if (!((s_vf_inputs >> i) & 1u)) continue;
++            rsx_fetch_attrib(state, i, vi, fresh[i].v);
++            if (memcmp(&fresh[i], &out16[i], sizeof fresh[i])) { bad++; break; }
++        }
++        if ((n & 0xFFFFF) == 0)
++            fprintf(stderr, "[vtx-fetch-check nt] %llu vertices, %llu mismatches\n", n, bad); } }
++}
++
+ /* Per-draw vertex cache for the paths that expand one guest vertex into
+  * several output vertices: indexed lists (shared vertices), strips and fans
+  * (each vertex in up to three triangles) and indexed quads. Fetching all 16
+@@ -7015,7 +7042,7 @@ static u32 upload_tris_vp_ix(const rsx_state* state, u32 first, u32 count, int c
+         if (s_ix_stamp[ix] != s_ix_gen) {
+             s_ix_stamp[ix] = s_ix_gen;
+             s_ix_slot[ix] = n;
+-            read_vp_vertex(state, ix, &vb[(u64)(s_ix_vbase + n) * 16]);
++            read_vp_vertex_vb(state, ix, &vb[(u64)(s_ix_vbase + n) * 16]);
+             n++;
+         }
+         ib[k] = s_ix_slot[ix];
+diff --git a/libs/video/rsx_vertex_fetch.c b/libs/video/rsx_vertex_fetch.c
+index 4d610eeb..0602afee 100644
+--- a/libs/video/rsx_vertex_fetch.c
++++ b/libs/video/rsx_vertex_fetch.c
+@@ -7,6 +7,9 @@
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <string.h>
++#if defined(__SSE4_1__)
++#include <smmintrin.h>
++#endif
+ 
+ float rsx_rd_bef(const u8* p)
+ {
+@@ -137,8 +140,12 @@ void rsx_fetch_attrib(const rsx_state* st, int idx, u32 vi, float out[4])
+     decode_attrib(p, a, a->size ? (a->size > 4 ? 4 : a->size) : 4, idx, out);
+ }
+ 
++#define FETCH_KIND(type, n) (((type) << 3) | (n))
++
+ void rsx_fetch_vertex_begin(const rsx_state* st, u32 inputs, rsx_attrib_fetch f[16])
+ {
++    static int scalar = -1;   /* VTX_SCALAR=1: decode_attrib for every type, the A/B baseline */
++    if (scalar < 0) scalar = getenv("VTX_SCALAR") ? 1 : 0;
+     for (int i = 0; i < 16; i++) {
+         const rsx_vertex_attrib* a = &st->vertex_attribs[i];
+         f[i].a = a;
+@@ -146,6 +153,7 @@ void rsx_fetch_vertex_begin(const rsx_state* st, u32 inputs, rsx_attrib_fetch f[
+         f[i].offset = a->offset & 0x7FFFFFFFu;
+         f[i].page = 0xFFFFFFFFu;
+         f[i].n = a->size ? (a->size > 4 ? 4 : a->size) : 4;
++        f[i].kind = scalar ? 0 : FETCH_KIND(a->type & 31u, f[i].n);
+         f[i].local = (a->offset & 0x80000000u) ? 0 : 1;
+         f[i].mode = !((inputs >> i) & 1u) ? 3
+                   : (!a->enabled || a->stride == 0 || !vm_base) ? 0
+@@ -153,11 +161,139 @@ void rsx_fetch_vertex_begin(const rsx_state* st, u32 inputs, rsx_attrib_fetch f[
+     }
+ }
+ 
++#if defined(__SSE4_1__)
++/* The same conversions as decode_attrib, four components at a time, and bit
++ * for bit the same results: decode_attrib was a quarter of the RSX thread in
++ * the first story scene, mostly half floats taken one component at a time.
++ * rsx_fetch_attrib keeps the scalar decode, so VTX_FETCH_CHECK=1 compares the
++ * two on real frames. n is a constant in every call, so each one compiles to
++ * fixed-size loads. Lanes past n keep the constant register. */
++#define FETCH_INLINE static inline __attribute__((always_inline))
++
++FETCH_INLINE __m128 keep_tail(__m128 v, __m128 cst, u32 n)
++{
++    switch (n) {
++    case 1:  return _mm_blend_ps(v, cst, 0xE);
++    case 2:  return _mm_blend_ps(v, cst, 0xC);
++    case 3:  return _mm_blend_ps(v, cst, 0x8);
++    default: return v;
++    }
++}
++
++/* The attribute's bytes, and nothing past them: the next byte may be unmapped. */
++FETCH_INLINE __m128i load_bytes(const u8* p, u32 bytes)
++{
++    u8 b[16] = {0};
++    memcpy(b, p, bytes);
++    return _mm_loadu_si128((const __m128i*)b);
++}
++
++/* Big-endian 16-bit component k into the low half of lane k. */
++FETCH_INLINE __m128i spread16(const u8* p, u32 n)
++{
++    const __m128i m = _mm_setr_epi8(1, 0, -1, -1, 3, 2, -1, -1, 5, 4, -1, -1, 7, 6, -1, -1);
++    return _mm_shuffle_epi8(load_bytes(p, 2 * n), m);
++}
++
++FETCH_INLINE __m128 fetch_f32(const u8* p, __m128 cst, u32 n)
++{
++    const __m128i m = _mm_setr_epi8(3, 2, 1, 0, 7, 6, 5, 4, 11, 10, 9, 8, 15, 14, 13, 12);
++    return keep_tail(_mm_castsi128_ps(_mm_shuffle_epi8(load_bytes(p, 4 * n), m)), cst, n);
++}
++
++/* rsx_rd_half_be: zero and denormal give a signed zero, exponent 31 keeps the
++ * mantissa under an all-ones exponent, and the rest rebias by 112. */
++FETCH_INLINE __m128 fetch_f16(const u8* p, __m128 cst, u32 n)
++{
++    const __m128i h = spread16(p, n);
++    const __m128i e = _mm_and_si128(h, _mm_set1_epi32(0x7C00));
++    const __m128i em = _mm_slli_epi32(_mm_and_si128(h, _mm_set1_epi32(0x7FFF)), 13);
++    const __m128i sign = _mm_slli_epi32(_mm_and_si128(h, _mm_set1_epi32(0x8000)), 16);
++    __m128i f = _mm_add_epi32(em, _mm_set1_epi32(112 << 23));
++    f = _mm_blendv_epi8(f, _mm_or_si128(em, _mm_set1_epi32(0x7F800000)),
++                        _mm_cmpeq_epi32(e, _mm_set1_epi32(0x7C00)));
++    f = _mm_andnot_si128(_mm_cmpeq_epi32(e, _mm_setzero_si128()), f);
++    return keep_tail(_mm_castsi128_ps(_mm_or_si128(f, sign)), cst, n);
++}
++
++/* u8, divided by 255 when normalized; divps rounds exactly as the scalar divide. */
++FETCH_INLINE __m128 fetch_u8(const u8* p, __m128 cst, u32 n, int norm)
++{
++    u32 w = 0;
++    memcpy(&w, p, n);
++    __m128 v = _mm_cvtepi32_ps(_mm_cvtepu8_epi32(_mm_cvtsi32_si128((int)w)));
++    if (norm) v = _mm_div_ps(v, _mm_set1_ps(255.0f));
++    return keep_tail(v, cst, n);
++}
++
++FETCH_INLINE __m128 fetch_s16(const u8* p, __m128 cst, u32 n, int norm)
++{
++    const __m128i s = _mm_srai_epi32(_mm_slli_epi32(spread16(p, n), 16), 16);
++    __m128 v = _mm_cvtepi32_ps(s);
++    if (norm) v = _mm_div_ps(v, _mm_set1_ps(32767.0f));
++    return keep_tail(v, cst, n);
++}
++
++/* One slot of the vertex. An attribute the program does not read (mode 3)
++ * gets the constant register, for rsx_fetch_vertex_stream. */
++FETCH_INLINE __m128 fetch_slot(const rsx_state* st, rsx_attrib_fetch* e, int i, u32 vi)
++{
++    const __m128 cst = _mm_loadu_ps(st->vertex_data4f[i]);
++    if (e->mode != 1) {
++        if (e->mode != 2) return cst;
++        float t[4];
++        rsx_fetch_attrib(st, i, vi, t);
++        return _mm_loadu_ps(t);
++    }
++    const u32 off = e->offset + vi * e->a->stride, page = off >> 20;
++    if (page != e->page) {
++        e->page = page;
++        e->base = vm_base + cellGcmResolveLocated(e->local, page << 20);
++    }
++    const u8* p = e->base + (off & 0xFFFFFu);
++    switch (e->kind) {
++    case FETCH_KIND(2, 1): return fetch_f32(p, cst, 1);
++    case FETCH_KIND(2, 2): return fetch_f32(p, cst, 2);
++    case FETCH_KIND(2, 3): return fetch_f32(p, cst, 3);
++    case FETCH_KIND(2, 4): return fetch_f32(p, cst, 4);
++    case FETCH_KIND(3, 1): return fetch_f16(p, cst, 1);
++    case FETCH_KIND(3, 2): return fetch_f16(p, cst, 2);
++    case FETCH_KIND(3, 3): return fetch_f16(p, cst, 3);
++    case FETCH_KIND(3, 4): return fetch_f16(p, cst, 4);
++    case FETCH_KIND(4, 1): return fetch_u8(p, cst, 1, 1);
++    case FETCH_KIND(4, 2): return fetch_u8(p, cst, 2, 1);
++    case FETCH_KIND(4, 3): return fetch_u8(p, cst, 3, 1);
++    case FETCH_KIND(4, 4): return fetch_u8(p, cst, 4, 1);
++    case FETCH_KIND(7, 1): return fetch_u8(p, cst, 1, 0);
++    case FETCH_KIND(7, 2): return fetch_u8(p, cst, 2, 0);
++    case FETCH_KIND(7, 3): return fetch_u8(p, cst, 3, 0);
++    case FETCH_KIND(7, 4): return fetch_u8(p, cst, 4, 0);
++    case FETCH_KIND(1, 1): return fetch_s16(p, cst, 1, 1);
++    case FETCH_KIND(1, 2): return fetch_s16(p, cst, 2, 1);
++    case FETCH_KIND(1, 3): return fetch_s16(p, cst, 3, 1);
++    case FETCH_KIND(1, 4): return fetch_s16(p, cst, 4, 1);
++    case FETCH_KIND(5, 1): return fetch_s16(p, cst, 1, 0);
++    case FETCH_KIND(5, 2): return fetch_s16(p, cst, 2, 0);
++    case FETCH_KIND(5, 3): return fetch_s16(p, cst, 3, 0);
++    case FETCH_KIND(5, 4): return fetch_s16(p, cst, 4, 0);
++    default: {   /* CMP and the unknown types */
++        float t[4];
++        memcpy(t, st->vertex_data4f[i], sizeof t);
++        decode_attrib(p, e->a, e->n, i, t);
++        return _mm_loadu_ps(t);
++    }
++    }
++}
++#endif
++
+ void rsx_fetch_vertex(const rsx_state* st, rsx_attrib_fetch f[16], u32 vi, float out[16][4])
+ {
+     for (int i = 0; i < 16; i++) {
+         rsx_attrib_fetch* e = &f[i];
+         if (e->mode == 3) continue;
++#if defined(__SSE4_1__)
++        _mm_storeu_ps(out[i], fetch_slot(st, e, i, vi));
++#else
+         memcpy(out[i], st->vertex_data4f[i], sizeof out[i]);
+         if (e->mode == 0) continue;
+         if (e->mode == 2) { rsx_fetch_attrib(st, i, vi, out[i]); continue; }
+@@ -167,5 +303,17 @@ void rsx_fetch_vertex(const rsx_state* st, rsx_attrib_fetch f[16], u32 vi, float
+             e->base = vm_base + cellGcmResolveLocated(e->local, page << 20);
+         }
+         decode_attrib(e->base + (off & 0xFFFFFu), e->a, e->n, i, out[i]);
++#endif
+     }
+ }
++
++void rsx_fetch_vertex_stream(const rsx_state* st, rsx_attrib_fetch f[16], u32 vi, float out[16][4])
++{
++#if defined(__SSE4_1__)
++    for (int i = 0; i < 16; i++) _mm_stream_ps(out[i], fetch_slot(st, &f[i], i, vi));
++#else
++    for (int i = 0; i < 16; i++)
++        if (f[i].mode == 3) memcpy(out[i], st->vertex_data4f[i], sizeof out[i]);
++    rsx_fetch_vertex(st, f, vi, out);
++#endif
++}
+diff --git a/libs/video/rsx_vertex_fetch.h b/libs/video/rsx_vertex_fetch.h
+index ac621f0b..355148d6 100644
+--- a/libs/video/rsx_vertex_fetch.h
++++ b/libs/video/rsx_vertex_fetch.h
+@@ -79,12 +79,20 @@ typedef struct rsx_attrib_fetch {
+     const rsx_vertex_attrib* a;
+     const u8* base;   /* host address of the window `page` */
+     u32 offset, page, n;
++    u32 kind;         /* type and n, for the conversion */
+     int local;
+     int mode;         /* 0 constant register, 1 array, 2 array with a divisor, 3 not read */
+ } rsx_attrib_fetch;
+ void rsx_fetch_vertex_begin(const rsx_state* st, u32 inputs, rsx_attrib_fetch f[16]);
+ void rsx_fetch_vertex(const rsx_state* st, rsx_attrib_fetch f[16], u32 vi, float out[16][4]);
+ 
++/* rsx_fetch_vertex for memory the CPU does not read back, such as an upload
++ * heap: all 16 slots are written (the ones the program does not read get the
++ * constant register), with streaming stores, so no line of the destination is
++ * read from DRAM before it is overwritten. `out` must be 16-byte aligned, and
++ * the caller fences (_mm_sfence) before the GPU reads it. */
++void rsx_fetch_vertex_stream(const rsx_state* st, rsx_attrib_fetch f[16], u32 vi, float out[16][4]);
++
+ #ifdef __cplusplus
+ }
+ #endif
+diff --git a/libs/video/tests/test_vertex_fetch_simd.c b/libs/video/tests/test_vertex_fetch_simd.c
+new file mode 100644
+index 00000000..cd065bb2
+--- /dev/null
++++ b/libs/video/tests/test_vertex_fetch_simd.c
+@@ -0,0 +1,119 @@
++/*
++ * rsx_fetch_vertex against rsx_fetch_attrib, byte for byte.
++ *
++ * rsx_fetch_vertex converts four components at a time with SSE4.1, while
++ * rsx_fetch_attrib keeps the scalar decode_attrib. Random attribute states --
++ * every vertex type, sizes 0..4, LOCAL and MAIN arrays, frequency dividers in
++ * both modes, disabled arrays, inputs the program does not read -- over random
++ * guest bytes, plus every one of the 65536 half floats at each size: each
++ * attribute the program reads must come out exactly as rsx_fetch_attrib gives
++ * it, and the attributes it does not read must be left unwritten.
++ * rsx_fetch_vertex_stream must give the same slots, and the constant register
++ * in the ones the program does not read.
++ *
++ * Build (from the repo root):
++ *   clang -std=gnu17 -O2 -msse4.1 -Wall -Wextra -Wno-unused-parameter -I include -I libs/video \
++ *     -o /tmp/test_vertex_fetch_simd libs/video/tests/test_vertex_fetch_simd.c \
++ *     libs/video/rsx_vertex_fetch.c
++ */
++#include "rsx_vertex_fetch.h"
++
++#include <stdint.h>
++#include <stdio.h>
++#include <xmmintrin.h>
++#include <stdlib.h>
++#include <string.h>
++
++/* Guest memory: LOCAL at 0, MAIN 2 MB up, each resolved one to one. */
++enum { REGION = 2u << 20 };
++static u8 guest[2 * REGION + 64];
++u8* vm_base = guest;
++u32 cellGcmResolveLocated(int location, u32 offset) { return (location ? 0 : REGION) + offset; }
++u32 cellGcmResolveOffset(u32 offset) { return offset; }
++
++static int fails;
++#define CHECK(c, ...) do { if (!(c)) { fails++; if (fails <= 20) { \
++    printf("FAIL %s:%d: ", __FILE__, __LINE__); printf(__VA_ARGS__); printf("\n"); } } } while (0)
++
++static uint64_t rng = 0x243F6A8885A308D3ull;
++static uint32_t rnd(void)
++{
++    rng ^= rng << 13; rng ^= rng >> 7; rng ^= rng << 17;
++    return (uint32_t)rng;
++}
++
++static void compare(rsx_state* st, u32 inputs, u32 vi, const char* what)
++{
++    rsx_attrib_fetch f[16];
++    float out[16][4], ref[4];
++    memset(out, 0xCD, sizeof out);
++    rsx_fetch_vertex_begin(st, inputs, f);
++    rsx_fetch_vertex(st, f, vi, out);
++    /* The streaming variant: the same slots, and the constant register in the rest. */
++    _Alignas(16) float streamed[16][4];
++    rsx_fetch_vertex_begin(st, inputs, f);
++    rsx_fetch_vertex_stream(st, f, vi, streamed);
++    _mm_sfence();
++    for (int i = 0; i < 16; i++) {
++        if (!((inputs >> i) & 1u)) {
++            u8 untouched[16];
++            memset(untouched, 0xCD, sizeof untouched);
++            CHECK(!memcmp(out[i], untouched, 16), "%s: attr %d written though not read", what, i);
++            CHECK(!memcmp(streamed[i], st->vertex_data4f[i], 16),
++                  "%s: attr %d streamed without the constant register", what, i);
++            continue;
++        }
++        rsx_fetch_attrib(st, i, vi, ref);
++        CHECK(!memcmp(streamed[i], ref, 16), "%s: vi=%u attr=%d streamed differs", what, vi, i);
++        const rsx_vertex_attrib* a = &st->vertex_attribs[i];
++        CHECK(!memcmp(out[i], ref, 16),
++              "%s: vi=%u attr=%d type=%u size=%u stride=%u off=0x%X: %08X %08X %08X %08X want %08X %08X %08X %08X",
++              what, vi, i, a->type, a->size, a->stride, a->offset,
++              ((u32*)out[i])[0], ((u32*)out[i])[1], ((u32*)out[i])[2], ((u32*)out[i])[3],
++              ((u32*)ref)[0], ((u32*)ref)[1], ((u32*)ref)[2], ((u32*)ref)[3]);
++    }
++}
++
++int main(void)
++{
++    static rsx_state st;
++    for (size_t k = 0; k < sizeof guest; k++) guest[k] = (u8)rnd();
++
++    /* Random states. */
++    static const u32 types[] = { 1, 2, 3, 4, 5, 6, 7, 0, 8 };
++    long checks = 0;
++    for (int round = 0; round < 4000; round++) {
++        memset(&st, 0, sizeof st);
++        for (int i = 0; i < 16; i++) {
++            rsx_vertex_attrib* a = &st.vertex_attribs[i];
++            a->enabled = (rnd() % 8) != 0;
++            a->type = types[rnd() % (rnd() % 4 ? 7 : 9)];
++            a->size = rnd() % 5;
++            a->stride = (rnd() % 8) ? 4 + rnd() % 61 : 0;
++            a->offset = (rnd() % (REGION / 2)) | ((rnd() & 1) ? 0x80000000u : 0);
++            a->frequency = (rnd() % 6) ? 0 : 1 + rnd() % 5;
++            if (rnd() & 1) st.frequency_divider_op |= 1u << i;
++            for (int c = 0; c < 4; c++) st.vertex_data4f[i][c] = (float)(int)(rnd() % 2001 - 1000) / 7.0f;
++        }
++        const u32 inputs = rnd() & 0xFFFFu;
++        for (int v = 0; v < 64; v++, checks++) compare(&st, inputs, rnd() % 4096, "random");
++        /* Arrays that cross a 1 MB page inside the draw. */
++        st.vertex_attribs[0].offset = (1u << 20) - 40;
++        st.vertex_attribs[0].stride = 12;
++        st.vertex_attribs[0].enabled = 1;
++        for (u32 v = 0; v < 8; v++, checks++) compare(&st, inputs | 1u, v, "page");
++    }
++
++    /* Every half float, at each size, as attribute 3 of a LOCAL array. */
++    for (u32 h = 0; h < 65536; h++) { guest[2 * h] = (u8)(h >> 8); guest[2 * h + 1] = (u8)h; }
++    for (u32 size = 1; size <= 4; size++) {
++        memset(&st, 0, sizeof st);
++        rsx_vertex_attrib* a = &st.vertex_attribs[3];
++        a->enabled = 1; a->type = 3; a->size = size; a->stride = 2 * size; a->offset = 0;
++        for (int c = 0; c < 4; c++) st.vertex_data4f[3][c] = 0.25f * (float)(c + 1);
++        for (u32 vi = 0; vi < 65536 / size; vi++, checks++) compare(&st, 1u << 3, vi, "half");
++    }
++
++    printf("%ld vertices compared, %d failures\n", checks, fails);
++    return fails ? 1 : 0;
++}
