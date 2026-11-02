@@ -41,7 +41,7 @@ namespace Sonic06Launcher
             AutoScaleMode = AutoScaleMode.Dpi;
             Text = "sonic06-recomp launcher";
             Font = new Font("Segoe UI", 9f);
-            ClientSize = new Size(940, 700);
+            ClientSize = new Size(940, 760);
             MinimumSize = new Size(800, 600);
             StartPosition = FormStartPosition.CenterScreen;
             BuildUi();
@@ -67,7 +67,7 @@ namespace Sonic06Launcher
             tabs.TabPages.Add(PlayTab());
             tabs.TabPages.Add(SupportTab());
 
-            var bottom = new Panel { Dock = DockStyle.Bottom, Height = 210, Padding = new Padding(8) };
+            var bottom = new Panel { Dock = DockStyle.Bottom, Height = 180, Padding = new Padding(8) };
             logBox.Multiline = true; logBox.ReadOnly = true; logBox.ScrollBars = ScrollBars.Vertical;
             logBox.Dock = DockStyle.Fill; logBox.Font = new Font("Consolas", 8.5f); logBox.BackColor = SystemColors.Window;
             var barRow = new Panel { Dock = DockStyle.Top, Height = 26 };
@@ -237,17 +237,21 @@ namespace Sonic06Launcher
             var tools = setup.MissingTools();
             var needElf = !File.Exists(Workspace.EbootElf);
             var plan = new List<string>();
-            if (tools.Count > 0) plan.Add("install with winget: " + string.Join(", ", tools.Select(t => t.Name)));
+            if (tools.Count > 0) plan.Add("install the build tools: " + string.Join(", ", tools.Select(t => t.Name)));
             if (!Directory.Exists(Path.Combine(Workspace.Disc, "PS3_GAME"))) plan.Add("copy your disc (ISO or folder) into game\\disc");
             if (needElf) plan.Add("decrypt EBOOT.BIN with your RPCS3");
             if (setup.FfmpegBin() == null || setup.FfmpegInclude() == null) plan.Add("download FFmpeg 8 (LGPL) from github.com/BtbN/FFmpeg-Builds");
             if (!File.Exists(Workspace.GameExe))
-                plan.Add($"download ps3recomp from GitHub, translate the game code and build it ({Tools.BuildJobs()} files at a time; an hour or more on a typical PC)");
+                plan.Add($"download ps3recomp from GitHub, translate the game code and build it ({Tools.BuildJobs()} files at a time; about 17 minutes on a fast PC, longer on a slower one or with less memory)");
             if (plan.Count == 0) { Log("Everything is set up. Press Play."); return; }
             if (MessageBox.Show(this, "The launcher will:\n\n- " + string.Join("\n- ", plan) + "\n\nContinue?",
                                 "Set up everything", MessageBoxButtons.OKCancel, MessageBoxIcon.Information) != DialogResult.OK) return;
 
-            if (tools.Count > 0) await setup.InstallTools(tools);
+            if (tools.Count > 0)
+            {
+                if (!AcceptMicrosoftLicense(tools)) { Log("Microsoft's license was not accepted."); return; }
+                await setup.InstallTools(tools, true);
+            }
             if (!Directory.Exists(Path.Combine(Workspace.Disc, "PS3_GAME")))
             {
                 if (!await ChooseIso() && !await ChooseFolder()) { Log("No disc chosen."); return; }
@@ -266,10 +270,22 @@ namespace Sonic06Launcher
         {
             var tools = setup.MissingTools();
             if (tools.Count == 0) { Log("All build tools are installed."); return; }
-            if (MessageBox.Show(this, "Install with winget:\n\n- " + string.Join("\n- ", tools.Select(t => $"{t.Name} ({t.WingetId})")) +
-                                "\n\nWindows may ask for permission for each one.", "Install build tools",
+            if (MessageBox.Show(this, "Install:\n\n- " + string.Join("\n- ", tools.Select(t => t.WingetId != null ? $"{t.Name} (winget {t.WingetId})" : $"{t.Name} ({t.Detail})")) +
+                                "\n\nWindows may ask for permission for each winget package.", "Install build tools",
                                 MessageBoxButtons.OKCancel, MessageBoxIcon.Information) != DialogResult.OK) return;
-            await setup.InstallTools(tools);
+            if (!AcceptMicrosoftLicense(tools)) { Log("Microsoft's license was not accepted."); return; }
+            await setup.InstallTools(tools, true);
+        }
+
+        /// <summary>The CRT and SDK are Microsoft's; the player accepts their license, not the launcher.</summary>
+        bool AcceptMicrosoftLicense(List<ToolPackage> tools)
+        {
+            if (!tools.Any(t => t.Install != null)) return true;
+            return MessageBox.Show(this,
+                "Microsoft's C runtime and Windows SDK (headers and libraries, about 630 MB) are downloaded from Microsoft" +
+                " with xwin, under the Visual Studio Build Tools license:\n\n" + Setup.MicrosoftLicenseUrl +
+                "\n\nDo you accept that license?", "Microsoft license",
+                MessageBoxButtons.YesNo, MessageBoxIcon.Question, MessageBoxDefaultButton.Button2) == DialogResult.Yes;
         }
 
         async Task<bool> ChooseIso()

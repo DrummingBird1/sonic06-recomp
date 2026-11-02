@@ -18,11 +18,12 @@ namespace Sonic06Launcher
         public StatusItem(string step, bool ok, string detail) { Step = step; Ok = ok; Detail = detail; }
     }
 
-    /// <summary>A package winget installs for the build, and how to tell it is there.</summary>
+    /// <summary>A build tool, how to tell it is there, and how to install it: winget, or Install when WingetId is null.</summary>
     class ToolPackage
     {
-        public string Name, WingetId, Override;
+        public string Name, WingetId, Detail = "build tool, installed with winget";
         public Func<bool> Present;
+        public Func<Setup, Task> Install;
     }
 
     /// <summary>
@@ -50,13 +51,23 @@ namespace Sonic06Launcher
         // The developer machine's shared copy; players get a clone in deps\.
         const string SharedPs3Recomp = @"<local>/shared\toolchains\ps3recomp";
 
+        // xwin fetches Microsoft's CRT and Windows SDK, the only part of Visual
+        // Studio clang-cl needs, from Microsoft's servers: 630 MB instead of a
+        // Build Tools install. Pinned, and checked against its release hash.
+        public const string XwinUrl =
+            "https://github.com/Jake-Shadle/xwin/releases/download/0.10.0/xwin-0.10.0-x86_64-pc-windows-msvc.tar.gz";
+        const string XwinSha256 = "96e83665ef5c1406aabd0be603a8d08e67e604f36fda630b6807ee948a614e26";
+        public const string MicrosoftLicenseUrl = "https://go.microsoft.com/fwlink/?LinkId=2086102";
+
         public static readonly ToolPackage[] Packages =
         {
-            new ToolPackage { Name = "VS Build Tools (C++, CMake)", WingetId = "Microsoft.VisualStudio.BuildTools",
-                Override = "--wait --passive --norestart --add Microsoft.VisualStudio.Workload.VCTools " +
-                           "--add Microsoft.VisualStudio.Component.VC.CMake.Project --includeRecommended",
-                Present = () => Tools.VisualStudio() != null },
+            new ToolPackage { Name = "Windows SDK + C runtime",
+                Present = () => Tools.VisualStudio() != null || Tools.WinSysRoot() != null,
+                Detail = "630 MB from Microsoft (xwin); not needed with Visual Studio",
+                Install = s => s.InstallWinSysRoot() },
             new ToolPackage { Name = "LLVM (clang-cl)", WingetId = "LLVM.LLVM", Present = () => Tools.ClangCl() != null },
+            new ToolPackage { Name = "CMake", WingetId = "Kitware.CMake", Present = () => Tools.CMake() != null },
+            new ToolPackage { Name = "Ninja", WingetId = "Ninja-build.Ninja", Present = () => Tools.Ninja() != null },
             new ToolPackage { Name = "Git", WingetId = "Git.Git", Present = () => Tools.Git() != null },
             new ToolPackage { Name = "uv (Python)", WingetId = "astral-sh.uv", Present = () => Tools.Uv() != null },
             new ToolPackage { Name = "PowerShell 7", WingetId = "Microsoft.PowerShell", Present = () => Tools.Pwsh() != null },
@@ -82,7 +93,7 @@ namespace Sonic06Launcher
 
         public List<StatusItem> Check()
         {
-            var list = Packages.Select(p => new StatusItem(p.Name, p.Present(), "build tool, installed with winget")).ToList();
+            var list = Packages.Select(p => new StatusItem(p.Name, p.Present(), p.Detail)).ToList();
             var ram = Tools.RamGb();
             list.Add(new StatusItem($"Memory: {ram:0} GB", ram >= 7.5,
                 ram >= 7.5 ? $"builds {Tools.BuildJobs()} files at a time" : "8 GB or more is needed to build"));
@@ -105,21 +116,67 @@ namespace Sonic06Launcher
 
         public List<ToolPackage> MissingTools() => Packages.Where(p => !p.Present()).ToList();
 
-        public async Task InstallTools(IEnumerable<ToolPackage> packages)
+        /// <summary>
+        /// Installs the given tools. The CRT and SDK come under Microsoft's
+        /// license, which the player has to accept first (MicrosoftLicenseUrl).
+        /// </summary>
+        public async Task InstallTools(IEnumerable<ToolPackage> packages, bool microsoftLicenseAccepted)
         {
+            foreach (var p in packages.Where(p => p.Install != null))
+            {
+                if (!microsoftLicenseAccepted)
+                    throw new InvalidOperationException($"{p.Name} needs Microsoft's license accepted: {MicrosoftLicenseUrl}");
+                await p.Install(this);
+                if (!p.Present()) throw new InvalidOperationException($"{p.Name} is still missing.");
+                log($"{p.Name}: installed.");
+            }
+            var viaWinget = packages.Where(p => p.WingetId != null).ToList();
+            if (viaWinget.Count == 0) return;
             var winget = Tools.Winget() ?? throw new InvalidOperationException(
                 "winget is not available. Install \"App Installer\" from the Microsoft Store, then try again.");
-            foreach (var p in packages)
+            foreach (var p in viaWinget)
             {
                 log($"Installing {p.Name} ({p.WingetId}). Windows may ask for permission.");
                 var args = $"install --id {p.WingetId} -e --source winget --accept-package-agreements --accept-source-agreements";
-                if (p.Override != null) args += " --override " + Runner.Quote(p.Override);
                 var rc = await Runner.Run(winget, args, log);
                 Tools.RefreshPath();
                 if (!p.Present())
                     throw new InvalidOperationException($"{p.Name} is still missing after winget (exit code {rc}).");
                 log($"{p.Name}: installed.");
             }
+        }
+
+        /// <summary>
+        /// xwin, then Microsoft's CRT and Windows SDK in the /winsysroot layout
+        /// clang-cl and lld-link read (deps\winsysroot). tools\build.ps1 uses it
+        /// when no Visual Studio with the C++ tools is installed. The download
+        /// cache goes on the same drive: xwin cannot move files across drives.
+        /// </summary>
+        public async Task InstallWinSysRoot()
+        {
+            Directory.CreateDirectory(Workspace.Deps);
+            var tgz = Path.Combine(Workspace.Deps, "xwin.tar.gz");
+            log("Downloading xwin: " + XwinUrl);
+            await Download(XwinUrl, tgz);
+            string hash;
+            using (var sha = System.Security.Cryptography.SHA256.Create())
+            using (var f = File.OpenRead(tgz))
+                hash = string.Concat(sha.ComputeHash(f).Select(b => b.ToString("x2")));
+            if (hash != XwinSha256) throw new InvalidOperationException("The xwin download does not match its release hash.");
+            var dir = Path.Combine(Workspace.Deps, "xwin");
+            Directory.CreateDirectory(dir);
+            var tar = Path.Combine(Environment.SystemDirectory, "tar.exe");   // bsdtar, in Windows since 10 1803
+            if (await Runner.Run(tar, $"-xzf {Runner.Quote(tgz)} -C {Runner.Quote(dir)}", log) != 0)
+                throw new InvalidOperationException("Could not unpack xwin.");
+            var xwin = Directory.GetFiles(dir, "xwin.exe", SearchOption.AllDirectories).Single();
+            var cache = Path.Combine(Workspace.Deps, ".xwin-cache");
+            var outDir = Path.Combine(Workspace.Deps, "winsysroot");
+            log("Downloading Microsoft's C runtime and Windows SDK (about 630 MB)");
+            var rc = await Runner.Run(xwin, $"--accept-license --cache-dir {Runner.Quote(cache)} --arch x86_64 splat " +
+                                            $"--use-winsysroot-style --preserve-ms-arch-notation --disable-symlinks --output {Runner.Quote(outDir)}", log);
+            if (Directory.Exists(cache)) Directory.Delete(cache, true);
+            File.Delete(tgz);
+            if (rc != 0) throw new InvalidOperationException($"xwin failed (exit code {rc}).");
         }
 
         // ---- the disc -------------------------------------------------------
@@ -290,7 +347,7 @@ namespace Sonic06Launcher
             var jobs = Tools.BuildJobs();
             var inc = FfmpegInclude();
             var args = $"-Jobs {jobs}" + (inc != null ? " -FFmpegInclude " + Runner.Quote(inc) : "");
-            log($"Building with {jobs} files at a time. On a slower PC this takes an hour or more.");
+            log($"Building with {jobs} files at a time. A fast PC takes about 15 minutes; a slower one, or one with less memory, longer.");
             var ninja = new Regex(@"^\[(\d+)/(\d+)\]");
             await Step("Build", Runner.Script("build.ps1", args, line =>
             {

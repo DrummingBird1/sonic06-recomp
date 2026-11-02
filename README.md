@@ -15,12 +15,12 @@ Work in progress, not ready for general use.
 
 ## What you need
 
-- Windows 10 or 11, 64-bit, with 8 GB of RAM or more. More memory builds faster: 8 GB builds two files at a time, 32 GB ten. So far the build has only been tried with 32 GB.
+- Windows 10 or 11, 64-bit, with 8 GB of RAM or more. The launcher builds as many files at a time as the memory allows: one with 8 GB, four with 16 GB, ten with 32 GB. On the 20-thread PC it was made on, ten at a time took 14 minutes, and two at a time took 23 minutes with a peak of 5 GB. A PC with less memory has not been tried yet.
 - About 10 GB of free disk space for the copied disc and the build, plus the build tools if you do not have them yet.
 - [RPCS3](https://rpcs3.net), to decrypt the game's `EBOOT.BIN` on your machine.
 - Your own BLES00028 disc, as an ISO or a folder.
 
-The launcher installs the rest with winget, after asking: Visual Studio Build Tools (C++ and CMake), LLVM, Git, uv and PowerShell 7. It downloads FFmpeg 8 (an LGPL build) for the movies, and ps3recomp.
+The launcher installs the rest after asking: LLVM, CMake, Ninja, Git, uv and PowerShell 7 with winget, and Microsoft's C runtime and Windows SDK (about 630 MB, downloaded from Microsoft with [xwin](https://github.com/Jake-Shadle/xwin)) once you accept Microsoft's license. Visual Studio is not needed; if you have it with the C++ tools, the build uses it instead. It also downloads FFmpeg 8 (an LGPL build) for the movies, and ps3recomp.
 
 ## Getting started
 
@@ -30,7 +30,7 @@ Run `Launcher.exe` (or `Sonic06.cmd` in a checkout) and press **Set up everythin
 2. copies your disc into `game/`,
 3. decrypts `EBOOT.BIN` with your RPCS3,
 4. downloads FFmpeg and ps3recomp,
-5. translates the game code and builds it. This is the long part: 18 minutes on a fast PC, an hour or more on a typical one.
+5. translates the game code and builds it. This is the long part: about 17 minutes on a fast PC with 32 GB, and longer on a slower one or with less memory.
 
 Then choose your settings on the **Play** tab (window size or fullscreen, VSync, language, sound, keyboard) and press **Play**.
 

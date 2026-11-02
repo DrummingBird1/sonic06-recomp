@@ -36,6 +36,22 @@ namespace Sonic06Launcher
                 File.WriteAllText(args[1], Support.CreateReport(s, GameSettings.Load(c), new[] { "(report made with --report)" }));
                 return 0;
             }
+            if (args.Length == 3 && args[0] == "--install-winsysroot" && args[1] == "--accept-microsoft-license")
+            {
+                // The CRT and SDK step alone, for testing; the flag is the license acceptance.
+                using (var w = new StreamWriter(args[2]) { AutoFlush = true })
+                {
+                    Action<string> log = l => { lock (w) w.WriteLine($"{DateTime.Now:HH:mm:ss} {l}"); };
+                    var s = new Setup(Config.Load(), log, (_, __) => { });
+                    try
+                    {
+                        s.InstallTools(Setup.Packages.Where(p => p.Install != null), true).GetAwaiter().GetResult();
+                        log("WINSYSROOT OK: " + Tools.WinSysRoot());
+                        return 0;
+                    }
+                    catch (Exception e) { log("WINSYSROOT FAILED: " + e.Message); return 1; }
+                }
+            }
             if (args.Length == 4 && args[0] == "--setup")
             {
                 // "Set up everything" without dialogs, for testing a clean checkout:

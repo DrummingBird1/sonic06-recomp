@@ -109,6 +109,22 @@ namespace Sonic06Launcher
         public static string ClangCl() => First(Path.Combine(Env("ProgramFiles"), "LLVM", "bin", "clang-cl.exe"));
         public static string Winget() => First(OnPath("winget.exe"),
             Path.Combine(Env("LOCALAPPDATA"), "Microsoft", "WindowsApps", "winget.exe"));
+        // Visual Studio brings its own CMake and Ninja; without it they come from winget.
+        public static string CMake() => First(OnPath("cmake.exe"), Path.Combine(Env("ProgramFiles"), "CMake", "bin", "cmake.exe"))
+            ?? (VisualStudio() != null ? "Visual Studio" : null);
+        public static string Ninja() => First(OnPath("ninja.exe"), Path.Combine(Workspace.Deps, "ninja.exe"),
+            Path.Combine(Env("LOCALAPPDATA"), "Microsoft", "WinGet", "Links", "ninja.exe"))
+            ?? (VisualStudio() != null ? "Visual Studio" : null);
+
+        /// <summary>The xwin /winsysroot (Microsoft's CRT and Windows SDK) in deps\, if it is complete.</summary>
+        public static string WinSysRoot()
+        {
+            var root = Path.Combine(Workspace.Deps, "winsysroot");
+            var msvc = Path.Combine(root, "VC", "Tools", "MSVC");
+            var ok = Directory.Exists(msvc) && Directory.GetDirectories(msvc).Any(v => File.Exists(Path.Combine(v, "lib", "x64", "msvcrt.lib")))
+                     && Directory.Exists(Path.Combine(root, "Windows Kits", "10", "Lib"));
+            return ok ? root : null;
+        }
 
         /// <summary>The Visual Studio (or Build Tools) install with the C++ tools and CMake/Ninja, as build.ps1 finds it.</summary>
         public static string VisualStudio()
@@ -133,13 +149,15 @@ namespace Sonic06Launcher
         }
 
         /// <summary>
-        /// Parallel compile jobs for this machine. One lifted unit peaks around
-        /// 2.2 GB in clang (tools\build.ps1); leave room for Windows and cap at
-        /// the 10 the build was tuned with, and at the cores there are.
+        /// Parallel compile jobs for this machine. One lifted unit peaked at
+        /// 2.69 GB in clang in a two-job build (2.21 in a ten-job one); leave
+        /// 3 GB for Windows, and cap at the 10 the build was tuned with and at
+        /// the cores there are. An "8 GB" PC reports about 7.8 and gets 1 job,
+        /// 16 GB gets 4, 32 GB gets 10.
         /// </summary>
         public static int BuildJobs()
         {
-            var byRam = (int)Math.Floor((RamGb() - 3.0) / 2.5);
+            var byRam = (int)Math.Floor((RamGb() - 3.0) / 2.7);
             return Math.Max(1, Math.Min(Math.Min(byRam, 10), Environment.ProcessorCount));
         }
     }
