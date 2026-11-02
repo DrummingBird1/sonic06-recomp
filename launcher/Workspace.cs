@@ -11,7 +11,7 @@ namespace Sonic06Launcher
     /// tools\build.ps1. Launcher.exe sits at the root in a release and under
     /// launcher\bin\... in a developer build, so the root is found by walking up.
     /// </summary>
-    static class Workspace
+    public static class Workspace
     {
         public static string Root { get; private set; }
 
@@ -41,7 +41,7 @@ namespace Sonic06Launcher
     /// stays out of git. tools\launcher.ps1 reads the same file for ffmpeg,
     /// ffmpegInclude and ps3recomp, so those keys keep their names.
     /// </summary>
-    class Config
+    public class Config
     {
         readonly Dictionary<string, object> v = new Dictionary<string, object>();
         static string PathOf => Workspace.P("launcher.local.json");
@@ -64,5 +64,6 @@ namespace Sonic06Launcher
         public string Str(string key, string def = "") => v.TryGetValue(key, out var o) && o is string s ? s : def;
         public bool Bool(string key, bool def = false) => v.TryGetValue(key, out var o) && o is bool b ? b : def;
         public void Set(string key, object value) { v[key] = value; Save(); }
+        public void Put(string key, object value) => v[key] = value;   // with Save() after a batch
     }
 }

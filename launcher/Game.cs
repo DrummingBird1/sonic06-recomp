@@ -1,31 +1,59 @@
 using System;
 using System.Collections.Generic;
+using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Runtime.CompilerServices;
 
 namespace Sonic06Launcher
 {
     /// <summary>
-    /// The player's settings, saved in launcher.local.json and handed to the
-    /// game as the environment switches the runtime reads.
+    /// The player's settings, saved in launcher.local.json as they change and
+    /// handed to the game as the environment switches the runtime reads.
     /// </summary>
-    class GameSettings
+    public class GameSettings : INotifyPropertyChanged
     {
-        public bool Fullscreen;              // D3D12_FULLSCREEN: borderless, over the primary monitor
-        public string WindowSize = "1280x720"; // D3D12_WINDOW: the frame is stretched to it
-        public bool VSync = true;            // D3D12_VSYNC=0 turns it off
-        public string Language = "";         // PS3_LANG; empty is the Windows language
-        public bool Mute;                    // PS3_MUTE
-        public bool Keyboard = true;         // PAD_NO_KEYBOARD turns the keyboard pad off
+        Config cfg;
+        public event PropertyChangedEventHandler PropertyChanged;
+
+        bool fullscreen, vsync = true, mute, keyboard = true, fxaa, escCloses;
+        string windowSize = "1280x720", language = "", aspect = "keep", scaler = "bilinear";
+        int sharpen, aniso, brightness = 100;
+
+        // Display and sound. D3D12_FULLSCREEN, D3D12_WINDOW, D3D12_VSYNC=0, PS3_LANG, PS3_MUTE.
+        public bool Fullscreen { get => fullscreen; set => Set(ref fullscreen, value); }
+        public string WindowSize { get => windowSize; set => Set(ref windowSize, value); }
+        public bool VSync { get => vsync; set => Set(ref vsync, value); }
+        public string Language { get => language; set => Set(ref language, value ?? ""); }
+        public bool Mute { get => mute; set => Set(ref mute, value); }
+        // Controls. PAD_NO_KEYBOARD, D3D12_ESC=ignore.
+        public bool Keyboard { get => keyboard; set => Set(ref keyboard, value); }
+        public bool EscCloses { get => escCloses; set => Set(ref escCloses, value); }
+        // The present pass (patch 0031): D3D12_ASPECT, D3D12_SCALER, D3D12_SHARPEN,
+        // D3D12_AA, D3D12_BRIGHTNESS, and D3D12_ANISO for the textures.
+        public string Aspect { get => aspect; set => Set(ref aspect, value); }
+        public string Scaler { get => scaler; set => Set(ref scaler, value); }
+        public int Sharpen { get => sharpen; set => Set(ref sharpen, Math.Max(0, Math.Min(100, value))); }   // percent
+        public bool Fxaa { get => fxaa; set => Set(ref fxaa, value); }
+        public int Aniso { get => aniso; set => Set(ref aniso, value); }                                      // 0 = the game's own
+        public int Brightness { get => brightness; set => Set(ref brightness, Math.Max(50, Math.Min(150, value))); } // percent
 
         public static readonly string[] Sizes = { "1280x720", "1600x900", "1920x1080", "2560x1440", "3840x2160" };
-        // The languages the European disc carries, as PS3_LANG codes.
-        public static readonly (string Code, string Name)[] Languages =
+        // The languages the European disc carries, as PS3_LANG codes; "" is the Windows language.
+        public static readonly (string Code, string Key)[] GameLanguages =
         {
-            ("", "Same as Windows"), ("en", "English"), ("ja", "Japanese"), ("fr", "French"),
-            ("de", "German"), ("it", "Italian"), ("es", "Spanish"),
+            ("", "lang_system"), ("en", "lang_en"), ("ja", "lang_ja"), ("fr", "lang_fr"),
+            ("de", "lang_de"), ("it", "lang_it"), ("es", "lang_es"),
         };
+
+        void Set<T>(ref T field, T value, [CallerMemberName] string name = null)
+        {
+            if (EqualityComparer<T>.Default.Equals(field, value)) return;
+            field = value;
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
+            Save();
+        }
 
         /// <summary>The largest size that leaves a margin on the primary screen: 1280x720 is small on a 4K monitor.</summary>
         static string DefaultSize()
@@ -39,31 +67,60 @@ namespace Sonic06Launcher
             return fit ?? Sizes[0];
         }
 
-        public static GameSettings Load(Config c) => new GameSettings
-        {
-            Fullscreen = c.Bool("fullscreen"),
-            WindowSize = c.Str("windowSize", DefaultSize()),
-            VSync = c.Bool("vsync", true),
-            Language = c.Str("language"),
-            Mute = c.Bool("mute"),
-            Keyboard = c.Bool("keyboard", true),
-        };
+        static int Int(Config c, string key, int def) => int.TryParse(c.Str(key, def.ToString()), out var v) ? v : def;
 
-        public void Save(Config c)
+        public static GameSettings Load(Config c)
         {
-            c.Set("fullscreen", Fullscreen); c.Set("windowSize", WindowSize); c.Set("vsync", VSync);
-            c.Set("language", Language); c.Set("mute", Mute); c.Set("keyboard", Keyboard);
+            var s = new GameSettings
+            {
+                fullscreen = c.Bool("fullscreen"), windowSize = c.Str("windowSize", DefaultSize()), vsync = c.Bool("vsync", true),
+                language = c.Str("language"), mute = c.Bool("mute"), keyboard = c.Bool("keyboard", true),
+                escCloses = c.Bool("escCloses"), aspect = c.Str("aspect", "keep"), scaler = c.Str("scaler", "bilinear"),
+                sharpen = Int(c, "sharpen", 0), fxaa = c.Bool("fxaa"), aniso = Int(c, "aniso", 0), brightness = Int(c, "brightness", 100),
+            };
+            s.cfg = c;
+            return s;
+        }
+
+        void Save()
+        {
+            if (cfg == null) return;
+            cfg.Put("fullscreen", fullscreen); cfg.Put("windowSize", windowSize); cfg.Put("vsync", vsync);
+            cfg.Put("language", language); cfg.Put("mute", mute); cfg.Put("keyboard", keyboard); cfg.Put("escCloses", escCloses);
+            cfg.Put("aspect", aspect); cfg.Put("scaler", scaler); cfg.Put("sharpen", sharpen.ToString());
+            cfg.Put("fxaa", fxaa); cfg.Put("aniso", aniso.ToString()); cfg.Put("brightness", brightness.ToString());
+            cfg.Save();
+        }
+
+        /// <summary>Performance, balanced and quality: starting points the player can change.</summary>
+        public void Preset(string name)
+        {
+            switch (name)
+            {
+                case "performance": Scaler = "bilinear"; Sharpen = 0; Fxaa = false; Aniso = 0; break;
+                case "balanced": Scaler = "sharp"; Sharpen = 25; Fxaa = false; Aniso = 4; break;
+                case "quality": Scaler = "bicubic"; Sharpen = 40; Fxaa = true; Aniso = 16; break;
+                default: Scaler = "bilinear"; Sharpen = 0; Fxaa = false; Aniso = 0; Aspect = "keep"; Brightness = 100; VSync = true; break;
+            }
         }
 
         public Dictionary<string, string> Env()
         {
+            var inv = System.Globalization.CultureInfo.InvariantCulture;
             var e = new Dictionary<string, string>();
             if (Fullscreen) e["D3D12_FULLSCREEN"] = "1"; else e["D3D12_WINDOW"] = WindowSize;
             if (!VSync) e["D3D12_VSYNC"] = "0";
             if (Language.Length > 0) e["PS3_LANG"] = Language;
-            // Both are read as "set or not", so they are only set when on.
+            // These two are read as "set or not", so they are only set when on.
             if (Mute) e["PS3_MUTE"] = "1";
             if (!Keyboard) e["PAD_NO_KEYBOARD"] = "1";
+            if (!EscCloses) e["D3D12_ESC"] = "ignore";
+            e["D3D12_ASPECT"] = Aspect;
+            e["D3D12_SCALER"] = Scaler;
+            if (Sharpen > 0) e["D3D12_SHARPEN"] = (Sharpen / 100.0).ToString("0.00", inv);
+            if (Fxaa) e["D3D12_AA"] = "fxaa";
+            if (Aniso > 1) e["D3D12_ANISO"] = Aniso.ToString(inv);
+            if (Brightness != 100) e["D3D12_BRIGHTNESS"] = (Brightness / 100.0).ToString("0.00", inv);
             return e;
         }
     }

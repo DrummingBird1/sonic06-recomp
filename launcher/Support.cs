@@ -106,7 +106,7 @@ namespace Sonic06Launcher
             b.AppendLine("Settings: " + string.Join(" ", s.Env().Select(kv => kv.Key + "=" + kv.Value)));
             b.AppendLine();
             b.AppendLine("Setup:");
-            foreach (var i in setup.Check()) b.AppendLine($"  [{(i.Ok ? "ok" : "--")}] {i.Step}: {i.Detail}");
+            foreach (var i in setup.Check()) b.AppendLine($"  [{(i.Ok ? "ok" : "--")}] {i.English}");
             return b.ToString();
         }
     }

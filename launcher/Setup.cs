@@ -11,17 +11,28 @@ using System.Threading.Tasks;
 
 namespace Sonic06Launcher
 {
-    class StatusItem
+    /// <summary>
+    /// One line of the setup status, as string keys (Strings\*.json) and the
+    /// values that fill them, so the window shows it in the player's language
+    /// and the bug report in English.
+    /// </summary>
+    public class StatusItem
     {
-        public string Step, Detail;
-        public bool Ok;
-        public StatusItem(string step, bool ok, string detail) { Step = step; Ok = ok; Detail = detail; }
+        public string Key, KeyArg, DetailKey, DetailArg;
+        public bool Ok { get; private set; }
+        public StatusItem(string key, bool ok, string detailKey, string detailArg = null, string keyArg = null)
+        {
+            Key = key; Ok = ok; DetailKey = detailKey; DetailArg = detailArg; KeyArg = keyArg;
+        }
+        public string Title => KeyArg == null ? Loc.I[Key] : Loc.I.F(Key, KeyArg);
+        public string Detail => DetailKey == null ? DetailArg : DetailArg == null ? Loc.I[DetailKey] : Loc.I.F(DetailKey, DetailArg);
+        public string English => $"{Loc.I.En(Key, KeyArg)}: {(DetailKey == null ? DetailArg : Loc.I.En(DetailKey, DetailArg))}";
     }
 
     /// <summary>A build tool, how to tell it is there, and how to install it: winget, or Install when WingetId is null.</summary>
     class ToolPackage
     {
-        public string Name, WingetId, Detail = "build tool, installed with winget";
+        public string Name, Key, WingetId, DetailKey = "detail_winget";
         public Func<bool> Present;
         public Func<Setup, Task> Install;
     }
@@ -61,16 +72,15 @@ namespace Sonic06Launcher
 
         public static readonly ToolPackage[] Packages =
         {
-            new ToolPackage { Name = "Windows SDK + C runtime",
+            new ToolPackage { Name = "Windows SDK + C runtime", Key = "step_crt", DetailKey = "detail_crt",
                 Present = () => Tools.VisualStudio() != null || Tools.WinSysRoot() != null,
-                Detail = "630 MB from Microsoft (xwin); not needed with Visual Studio",
                 Install = s => s.InstallWinSysRoot() },
-            new ToolPackage { Name = "LLVM (clang-cl)", WingetId = "LLVM.LLVM", Present = () => Tools.ClangCl() != null },
-            new ToolPackage { Name = "CMake", WingetId = "Kitware.CMake", Present = () => Tools.CMake() != null },
-            new ToolPackage { Name = "Ninja", WingetId = "Ninja-build.Ninja", Present = () => Tools.Ninja() != null },
-            new ToolPackage { Name = "Git", WingetId = "Git.Git", Present = () => Tools.Git() != null },
-            new ToolPackage { Name = "uv (Python)", WingetId = "astral-sh.uv", Present = () => Tools.Uv() != null },
-            new ToolPackage { Name = "PowerShell 7", WingetId = "Microsoft.PowerShell", Present = () => Tools.Pwsh() != null },
+            new ToolPackage { Name = "LLVM (clang-cl)", Key = "step_llvm", WingetId = "LLVM.LLVM", Present = () => Tools.ClangCl() != null },
+            new ToolPackage { Name = "CMake", Key = "step_cmake", WingetId = "Kitware.CMake", Present = () => Tools.CMake() != null },
+            new ToolPackage { Name = "Ninja", Key = "step_ninja", WingetId = "Ninja-build.Ninja", Present = () => Tools.Ninja() != null },
+            new ToolPackage { Name = "Git", Key = "step_git", WingetId = "Git.Git", Present = () => Tools.Git() != null },
+            new ToolPackage { Name = "uv (Python)", Key = "step_uv", WingetId = "astral-sh.uv", Present = () => Tools.Uv() != null },
+            new ToolPackage { Name = "PowerShell 7", Key = "step_pwsh", WingetId = "Microsoft.PowerShell", Present = () => Tools.Pwsh() != null },
         };
 
         // ---- status ---------------------------------------------------------
@@ -93,19 +103,21 @@ namespace Sonic06Launcher
 
         public List<StatusItem> Check()
         {
-            var list = Packages.Select(p => new StatusItem(p.Name, p.Present(), p.Detail)).ToList();
+            var list = Packages.Select(p => new StatusItem(p.Key, p.Present(), p.DetailKey)).ToList();
             var ram = Tools.RamGb();
-            list.Add(new StatusItem($"Memory: {ram:0} GB", ram >= 7.5,
-                ram >= 7.5 ? $"builds {Tools.BuildJobs()} files at a time" : "8 GB or more is needed to build"));
+            list.Add(ram >= 7.5
+                ? new StatusItem("step_memory", true, "detail_memory_ok", Tools.BuildJobs().ToString(), $"{ram:0}")
+                : new StatusItem("step_memory", false, "detail_memory_low", null, $"{ram:0}"));
             var elf = File.Exists(Workspace.EbootElf);
-            list.Add(new StatusItem("RPCS3, to decrypt the game", elf || Rpcs3() != null,
-                elf ? "not needed: already decrypted" : Rpcs3() ?? "choose rpcs3.exe"));
-            list.Add(new StatusItem("Game disc (BLES00028)", Directory.Exists(Path.Combine(Workspace.Disc, "PS3_GAME", "USRDIR")),
-                "your own copy, as an ISO or a folder"));
-            list.Add(new StatusItem("Decrypted EBOOT", elf, "decrypted with your RPCS3"));
+            list.Add(elf ? new StatusItem("step_rpcs3", true, "detail_rpcs3_done")
+                         : Rpcs3() != null ? new StatusItem("step_rpcs3", true, null, Rpcs3())
+                                           : new StatusItem("step_rpcs3", false, "detail_rpcs3_choose"));
+            list.Add(new StatusItem("step_disc", Directory.Exists(Path.Combine(Workspace.Disc, "PS3_GAME", "USRDIR")), "detail_disc"));
+            list.Add(new StatusItem("step_eboot", elf, "detail_eboot"));
             var ff = FfmpegBin();
-            list.Add(new StatusItem("FFmpeg 8 (movies)", ff != null && FfmpegInclude() != null, ff ?? "download or choose a folder"));
-            list.Add(new StatusItem("Game built", File.Exists(Workspace.GameExe), "translated and built on this PC"));
+            list.Add(ff != null && FfmpegInclude() != null ? new StatusItem("step_ffmpeg", true, null, ff)
+                                                           : new StatusItem("step_ffmpeg", false, "detail_ffmpeg_missing"));
+            list.Add(new StatusItem("step_built", File.Exists(Workspace.GameExe), "detail_built"));
             return list;
         }
 

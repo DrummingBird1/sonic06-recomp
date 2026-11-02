@@ -3,17 +3,23 @@
   <!-- The player's entry point. .NET Framework 4.8 because every Windows 10 and
        11 already has it: Launcher.exe is a small file that runs with nothing else
        installed, which is the point of a launcher that installs the rest. It
-       holds no game code and no game data, so it can be published on its own. -->
+       holds no game code and no game data, so it can be published on its own.
+       WPF draws the window; WinForms is there for the folder picker and the
+       screen size. -->
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
     <TargetFramework>net48</TargetFramework>
+    <UseWPF>true</UseWPF>
     <UseWindowsForms>true</UseWindowsForms>
+    <EnableDefaultApplicationDefinition>false</EnableDefaultApplicationDefinition>
+    <StartupObject>Sonic06Launcher.Program</StartupObject>
     <LangVersion>latest</LangVersion>
     <Nullable>disable</Nullable>
     <AssemblyName>Launcher</AssemblyName>
     <RootNamespace>Sonic06Launcher</RootNamespace>
     <ApplicationManifest>app.manifest</ApplicationManifest>
-    <Version>0.1.0</Version>
+    <ApplicationIcon>app.ico</ApplicationIcon>
+    <Version>0.2.0</Version>
     <Product>sonic06-recomp launcher</Product>
     <GenerateDocumentationFile>false</GenerateDocumentationFile>
   </PropertyGroup>
@@ -23,7 +29,13 @@
     <Reference Include="System.IO.Compression.FileSystem" />
     <Reference Include="System.Management" />
     <Reference Include="System.Net.Http" />
+    <Reference Include="System.Web" />
     <Reference Include="System.Web.Extensions" />
+  </ItemGroup>
+
+  <!-- One file per language: strings.<code>.json inside the exe. -->
+  <ItemGroup>
+    <EmbeddedResource Include="Strings\*.json" LogicalName="strings.%(Filename).json" />
   </ItemGroup>
 
 </Project>

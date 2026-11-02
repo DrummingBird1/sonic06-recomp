@@ -1,0 +1,460 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: DrummingBird1 <1979036+DrummingBird1@users.noreply.github.com>
+Date: Tue, 3 Nov 2026 00:26:50 +0200
+Subject: [PATCH] D3D12: a present pass (scaling filter, aspect, FXAA,
+ sharpening, brightness), anisotropic override, Esc
+
+The guest drew straight into the swap chain at its own size and DXGI
+stretched it to the window. Now render_targets[] are textures of the
+guest's size (in COMMON, so every existing transition stays valid), the
+swap chain is the window's size and follows WM_SIZE (ResizeBuffers with
+the GPU idle), and one full-screen triangle draws the guest frame into it:
+
+  D3D12_SCALER=bilinear|nearest|sharp|bicubic  (sharp: whole-pixel prescale)
+  D3D12_ASPECT=keep|stretch                    (keep: black bars, centred)
+  D3D12_AA=fxaa                                 (the small console FXAA)
+  D3D12_SHARPEN=0..1                            (contrast-adaptive, after CAS)
+  D3D12_BRIGHTNESS=0.5..1.5                     (a gamma curve)
+
+D3D12_PRESENT_PASS=0 goes back to drawing into the swap chain.
+D3D12_ANISO=<n> raises the anisotropy of the samplers the guest filters
+smoothly (point-sampled text and sprites keep theirs). D3D12_ESC=ignore
+stops Escape from closing the window, where a player may press it for the
+pause menu.
+
+Sonic 06: the title screen in a 1600x1200 window keeps 16:9 with bars,
+every filter draws, a window resized to 2200x1000 mid-run keeps drawing;
+the first story scene 29.5 flips/s and Wave Ocean 59.6 with the frames
+captured as before (CELLMARK reads render_targets), no crash.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ libs/video/rsx_d3d12_backend.c | 356 ++++++++++++++++++++++++++++++++-
+ 1 file changed, 348 insertions(+), 8 deletions(-)
+
+diff --git a/libs/video/rsx_d3d12_backend.c b/libs/video/rsx_d3d12_backend.c
+index 47e66f0a..e78a80e0 100644
+--- a/libs/video/rsx_d3d12_backend.c
++++ b/libs/video/rsx_d3d12_backend.c
+@@ -664,6 +664,68 @@ static u32    s_lock_n  = 0;
+  * Win32 window
+  * -----------------------------------------------------------------------*/
+ 
++/* ---------------------------------------------------------------------------
++ * The present pass
++ *
++ * The guest draws into render_targets[] at its own size (1280x720 for most
++ * titles). With the pass on, those are textures of their own, the swap chain
++ * is the size of the window, and one full-screen triangle draws the guest
++ * frame into it with the player's filter, aspect ratio, anti-aliasing,
++ * sharpening and brightness. With D3D12_PRESENT_PASS=0 the guest draws
++ * straight into the swap chain and Windows stretches it, as it always did.
++ *
++ *   D3D12_SCALER=bilinear|nearest|sharp|bicubic   sharp: whole-pixel prescale, then bilinear
++ *   D3D12_ASPECT=keep|stretch                     keep: the guest's shape, black bars around it
++ *   D3D12_AA=fxaa                                 FXAA on the guest frame, with smooth scaling
++ *   D3D12_SHARPEN=0..1                            contrast-adaptive, after AMD's CAS
++ *   D3D12_BRIGHTNESS=0.5..1.5                     a gamma curve, so nothing clips
++ * -------------------------------------------------------------------------*/
++static struct {
++    int on, read;
++    ID3D12Resource* sc[FRAME_COUNT];   /* the swap chain's buffers */
++    ID3D12DescriptorHeap* rtv_heap;    /* their RTVs */
++    ID3D12DescriptorHeap* srv_heap;    /* the guest frames as textures, shader visible */
++    u32 rtv_inc, srv_inc, sc_w, sc_h;
++    volatile LONG want_w, want_h;      /* the client size WM_SIZE last reported */
++    ID3D12RootSignature* root;
++    ID3D12PipelineState* pso;
++    float scaler, fxaa, sharpen, gamma;
++    int keep_aspect;
++} s_pp;
++
++static void pp_read_env(void)
++{
++    if (s_pp.read) return;
++    s_pp.read = 1;
++    const char* e = getenv("D3D12_PRESENT_PASS");
++    s_pp.on = !(e && *e == '0');
++    e = getenv("D3D12_SCALER");
++    s_pp.scaler = !e ? 0.f : !strcmp(e, "nearest") ? 1.f : !strcmp(e, "sharp") ? 2.f : !strcmp(e, "bicubic") ? 3.f : 0.f;
++    e = getenv("D3D12_ASPECT");
++    s_pp.keep_aspect = !(e && !strcmp(e, "stretch"));
++    e = getenv("D3D12_AA");
++    s_pp.fxaa = e && !strcmp(e, "fxaa") ? 1.f : 0.f;
++    e = getenv("D3D12_SHARPEN");
++    s_pp.sharpen = e ? (float)atof(e) : 0.f;
++    if (!(s_pp.sharpen >= 0.f)) s_pp.sharpen = 0.f;
++    if (s_pp.sharpen > 1.f) s_pp.sharpen = 1.f;
++    e = getenv("D3D12_BRIGHTNESS");
++    s_pp.gamma = e ? (float)atof(e) : 1.f;
++    if (!(s_pp.gamma >= 0.5f && s_pp.gamma <= 1.5f)) s_pp.gamma = 1.f;
++    printf("[D3D12] present pass %s: scaler %.0f aspect %s fxaa %.0f sharpen %.2f brightness %.2f\n",
++           s_pp.on ? "on" : "off", s_pp.scaler, s_pp.keep_aspect ? "keep" : "stretch",
++           s_pp.fxaa, s_pp.sharpen, s_pp.gamma);
++}
++
++/* D3D12_ESC=ignore: Escape no longer closes the window. A player who presses
++ * it for the pause menu should not lose the game; closing stays on the X. */
++static int d3d12_esc_closes(void)
++{
++    static int c = -1;
++    if (c < 0) { const char* e = getenv("D3D12_ESC"); c = !(e && !strcmp(e, "ignore")); }
++    return c;
++}
++
+ static LRESULT CALLBACK d3d12_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
+ {
+     switch (msg) {
+@@ -674,8 +736,15 @@ static LRESULT CALLBACK d3d12_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
+     case WM_DESTROY:
+         PostQuitMessage(0);
+         return 0;
++    case WM_SIZE:
++        /* The present pass resizes the swap chain on its next frame. */
++        if (wp != SIZE_MINIMIZED && LOWORD(lp) && HIWORD(lp)) {
++            InterlockedExchange(&s_pp.want_w, LOWORD(lp));
++            InterlockedExchange(&s_pp.want_h, HIWORD(lp));
++        }
++        break;
+     case WM_KEYDOWN:
+-        if (wp == VK_ESCAPE) {
++        if (wp == VK_ESCAPE && d3d12_esc_closes()) {
+             s_d3d.window_closed = 1;
+             DestroyWindow(hwnd);
+         }
+@@ -684,6 +753,166 @@ static LRESULT CALLBACK d3d12_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
+     return DefWindowProcA(hwnd, msg, wp, lp);
+ }
+ 
++/* The full-screen triangle and its pixel shader. uv spans the viewport, which
++ * present_pass sets to the rectangle the guest frame fills. */
++static const char s_pp_hlsl[] =
++    "Texture2D src : register(t0);\n"
++    "SamplerState pt : register(s0);\n"
++    "SamplerState li : register(s1);\n"
++    "cbuffer P : register(b0) { float2 srcSize; float2 dstSize; float scaler; float fxaa; float sharpen; float gamma; };\n"
++    "struct VO { float4 pos : SV_Position; float2 uv : TEXCOORD0; };\n"
++    "VO vs_main(uint id : SV_VertexID) {\n"
++    "  VO o; float2 p = float2((id << 1) & 2, id & 2);\n"
++    "  o.uv = p; o.pos = float4(p * float2(2, -2) + float2(-1, 1), 0, 1); return o; }\n"
++    "float3 bil(float2 uv) { return src.SampleLevel(li, uv, 0).rgb; }\n"
++    /* Sharp bilinear: as if scaled up by whole pixels first, then smoothed. */
++    "float3 sharpbil(float2 uv) {\n"
++    "  float2 k = max(floor(dstSize / srcSize), 1.0);\n"
++    "  float2 t = uv * srcSize, f = frac(t) - 0.5, r = 0.5 - 0.5 / k;\n"
++    "  float2 m = floor(t) + (f - clamp(f, -r, r)) * k + 0.5;\n"
++    "  return bil(m / srcSize); }\n"
++    /* Catmull-Rom bicubic from nine bilinear taps. */
++    "float3 bicubic(float2 uv) {\n"
++    "  float2 sp = uv * srcSize, t1 = floor(sp - 0.5) + 0.5, f = sp - t1;\n"
++    "  float2 w0 = f * (-0.5 + f * (1.0 - 0.5 * f)), w1 = 1.0 + f * f * (-2.5 + 1.5 * f);\n"
++    "  float2 w2 = f * (0.5 + f * (2.0 - 1.5 * f)), w3 = f * f * (-0.5 + 0.5 * f);\n"
++    "  float2 w12 = w1 + w2, a = (t1 - 1.0) / srcSize, b = (t1 + w2 / w12) / srcSize, c = (t1 + 2.0) / srcSize;\n"
++    "  float3 o = bil(float2(a.x, a.y)) * w0.x * w0.y + bil(float2(b.x, a.y)) * w12.x * w0.y + bil(float2(c.x, a.y)) * w3.x * w0.y;\n"
++    "  o += bil(float2(a.x, b.y)) * w0.x * w12.y + bil(float2(b.x, b.y)) * w12.x * w12.y + bil(float2(c.x, b.y)) * w3.x * w12.y;\n"
++    "  o += bil(float2(a.x, c.y)) * w0.x * w3.y + bil(float2(b.x, c.y)) * w12.x * w3.y + bil(float2(c.x, c.y)) * w3.x * w3.y;\n"
++    "  return max(o, 0.0); }\n"
++    "float luma(float3 c) { return dot(c, float3(0.299, 0.587, 0.114)); }\n"
++    /* FXAA in its small console form: blend along the local edge direction,
++     * and fall back to the narrower blend when the wider one leaves the
++     * neighbourhood's range. */
++    "float3 fxaa_px(float2 uv) {\n"
++    "  float2 px = 1.0 / srcSize;\n"
++    "  float3 nw = bil(uv + float2(-1, -1) * px), ne = bil(uv + float2(1, -1) * px);\n"
++    "  float3 sw = bil(uv + float2(-1, 1) * px), se = bil(uv + float2(1, 1) * px), m = bil(uv);\n"
++    "  float lnw = luma(nw), lne = luma(ne), lsw = luma(sw), lse = luma(se), lm = luma(m);\n"
++    "  float lmin = min(lm, min(min(lnw, lne), min(lsw, lse))), lmax = max(lm, max(max(lnw, lne), max(lsw, lse)));\n"
++    "  float2 dir = float2(-((lnw + lne) - (lsw + lse)), (lnw + lsw) - (lne + lse));\n"
++    "  float red = max((lnw + lne + lsw + lse) * 0.03125, 1.0 / 128.0);\n"
++    "  dir = clamp(dir / (min(abs(dir.x), abs(dir.y)) + red), -8.0, 8.0) * px;\n"
++    "  float3 a = 0.5 * (bil(uv + dir * (1.0 / 3.0 - 0.5)) + bil(uv + dir * (2.0 / 3.0 - 0.5)));\n"
++    "  float3 b = a * 0.5 + 0.25 * (bil(uv - dir * 0.5) + bil(uv + dir * 0.5));\n"
++    "  float lb = luma(b);\n"
++    "  return (lb < lmin || lb > lmax) ? a : b; }\n"
++    "float3 base(float2 uv) {\n"
++    "  if (fxaa > 0.5) return fxaa_px(uv);\n"
++    "  if (scaler > 2.5) return bicubic(uv);\n"
++    "  if (scaler > 1.5) return sharpbil(uv);\n"
++    "  if (scaler > 0.5) return src.SampleLevel(pt, uv, 0).rgb;\n"
++    "  return bil(uv); }\n"
++    "float4 ps_main(VO i) : SV_Target {\n"
++    "  float3 c = base(i.uv);\n"
++    "  if (sharpen > 0.0) {\n"
++    /* Contrast-adaptive sharpening (after AMD's CAS): less where the
++     * neighbourhood is already near black or white, so edges do not ring. */
++    "    float2 px = 1.0 / srcSize;\n"
++    "    float3 n = bil(i.uv + float2(0, -px.y)), s = bil(i.uv + float2(0, px.y));\n"
++    "    float3 e = bil(i.uv + float2(px.x, 0)), w = bil(i.uv + float2(-px.x, 0));\n"
++    "    float3 mn = min(c, min(min(n, s), min(e, w))), mx = max(c, max(max(n, s), max(e, w)));\n"
++    "    float3 amp = sqrt(saturate(min(mn, 1.0 - mx) / max(mx, 1e-5)));\n"
++    "    float3 wgt = amp * (-1.0 / lerp(8.0, 5.0, sharpen));\n"
++    "    c = saturate((c + (n + s + e + w) * wgt) / (1.0 + 4.0 * wgt)); }\n"
++    "  if (gamma != 1.0) c = pow(saturate(c), 1.0 / gamma);\n"
++    "  return float4(c, 1); }\n";
++
++/* The swap chain's buffers and their RTVs, after creation or a resize. */
++static int pp_get_buffers(void)
++{
++    D3D12_CPU_DESCRIPTOR_HANDLE h;
++    s_pp.rtv_heap->lpVtbl->GetCPUDescriptorHandleForHeapStart(s_pp.rtv_heap, &h);
++    for (u32 i = 0; i < FRAME_COUNT; i++) {
++        if (FAILED(s_d3d.swap_chain->lpVtbl->GetBuffer(s_d3d.swap_chain, i, &IID_ID3D12Resource, (void**)&s_pp.sc[i])))
++            return -1;
++        s_d3d.device->lpVtbl->CreateRenderTargetView(s_d3d.device, s_pp.sc[i], NULL, h);
++        h.ptr += s_pp.rtv_inc;
++    }
++    return 0;
++}
++
++static int pp_init(void)
++{
++    ID3D12Device* dev = s_d3d.device;
++    D3D12_DESCRIPTOR_HEAP_DESC hd = {0};
++    hd.NumDescriptors = FRAME_COUNT;
++    hd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
++    if (FAILED(dev->lpVtbl->CreateDescriptorHeap(dev, &hd, &IID_ID3D12DescriptorHeap, (void**)&s_pp.rtv_heap))) return -1;
++    hd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
++    hd.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
++    if (FAILED(dev->lpVtbl->CreateDescriptorHeap(dev, &hd, &IID_ID3D12DescriptorHeap, (void**)&s_pp.srv_heap))) return -1;
++    s_pp.rtv_inc = dev->lpVtbl->GetDescriptorHandleIncrementSize(dev, D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
++    s_pp.srv_inc = dev->lpVtbl->GetDescriptorHandleIncrementSize(dev, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
++    if (pp_get_buffers() != 0) return -1;
++
++    D3D12_CPU_DESCRIPTOR_HANDLE sh;
++    s_pp.srv_heap->lpVtbl->GetCPUDescriptorHandleForHeapStart(s_pp.srv_heap, &sh);
++    for (u32 i = 0; i < FRAME_COUNT; i++) {
++        D3D12_SHADER_RESOURCE_VIEW_DESC sv = {0};
++        sv.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
++        sv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
++        sv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
++        sv.Texture2D.MipLevels = 1;
++        dev->lpVtbl->CreateShaderResourceView(dev, s_d3d.render_targets[i], &sv, sh);
++        sh.ptr += s_pp.srv_inc;
++    }
++
++    /* 8 constants (b0), one SRV (t0), point and linear clamp samplers. */
++    D3D12_DESCRIPTOR_RANGE range = {0};
++    range.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
++    range.NumDescriptors = 1;
++    D3D12_ROOT_PARAMETER rp[2] = {0};
++    rp[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
++    rp[0].Constants.Num32BitValues = 8;
++    rp[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
++    rp[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
++    rp[1].DescriptorTable.NumDescriptorRanges = 1;
++    rp[1].DescriptorTable.pDescriptorRanges = &range;
++    rp[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
++    D3D12_STATIC_SAMPLER_DESC ss[2] = {0};
++    for (int i = 0; i < 2; i++) {
++        ss[i].Filter = i ? D3D12_FILTER_MIN_MAG_MIP_LINEAR : D3D12_FILTER_MIN_MAG_MIP_POINT;
++        ss[i].AddressU = ss[i].AddressV = ss[i].AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
++        ss[i].MaxLOD = D3D12_FLOAT32_MAX;
++        ss[i].ShaderRegister = (UINT)i;
++        ss[i].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
++    }
++    D3D12_ROOT_SIGNATURE_DESC rs = {0};
++    rs.NumParameters = 2; rs.pParameters = rp;
++    rs.NumStaticSamplers = 2; rs.pStaticSamplers = ss;
++    ID3DBlob *sig = NULL, *err = NULL, *vs = NULL, *ps = NULL;
++    HRESULT hr = D3D12SerializeRootSignature(&rs, D3D_ROOT_SIGNATURE_VERSION_1, &sig, &err);
++    if (FAILED(hr)) { printf("[D3D12] present pass root signature: %s\n", err ? (const char*)err->lpVtbl->GetBufferPointer(err) : "?"); return -1; }
++    hr = dev->lpVtbl->CreateRootSignature(dev, 0, sig->lpVtbl->GetBufferPointer(sig), sig->lpVtbl->GetBufferSize(sig),
++                                          &IID_ID3D12RootSignature, (void**)&s_pp.root);
++    sig->lpVtbl->Release(sig);
++    if (FAILED(hr)) return -1;
++    hr = D3DCompile(s_pp_hlsl, sizeof(s_pp_hlsl) - 1, "present_pass", NULL, NULL, "vs_main", "vs_5_0", 0, 0, &vs, &err);
++    if (FAILED(hr)) { printf("[D3D12] present pass VS: %s\n", err ? (const char*)err->lpVtbl->GetBufferPointer(err) : "?"); return -1; }
++    hr = D3DCompile(s_pp_hlsl, sizeof(s_pp_hlsl) - 1, "present_pass", NULL, NULL, "ps_main", "ps_5_0", 0, 0, &ps, &err);
++    if (FAILED(hr)) { printf("[D3D12] present pass PS: %s\n", err ? (const char*)err->lpVtbl->GetBufferPointer(err) : "?"); return -1; }
++    D3D12_GRAPHICS_PIPELINE_STATE_DESC pd = {0};
++    pd.pRootSignature = s_pp.root;
++    pd.VS.pShaderBytecode = vs->lpVtbl->GetBufferPointer(vs); pd.VS.BytecodeLength = vs->lpVtbl->GetBufferSize(vs);
++    pd.PS.pShaderBytecode = ps->lpVtbl->GetBufferPointer(ps); pd.PS.BytecodeLength = ps->lpVtbl->GetBufferSize(ps);
++    pd.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
++    pd.SampleMask = UINT_MAX;
++    pd.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
++    pd.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
++    pd.RasterizerState.DepthClipEnable = TRUE;
++    pd.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
++    pd.NumRenderTargets = 1;
++    pd.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
++    pd.SampleDesc.Count = 1;
++    hr = dev->lpVtbl->CreateGraphicsPipelineState(dev, &pd, &IID_ID3D12PipelineState, (void**)&s_pp.pso);
++    vs->lpVtbl->Release(vs); ps->lpVtbl->Release(ps);
++    if (FAILED(hr)) { printf("[D3D12] present pass PSO failed (0x%08lX)\n", hr); return -1; }
++    printf("[D3D12] present pass: guest %ux%u -> window %ux%u\n", s_d3d.width, s_d3d.height, s_pp.sc_w, s_pp.sc_h);
++    return 0;
++}
++
+ static HWND create_window(u32 width, u32 height, const char* title)
+ {
+     WNDCLASSEXA wc = {0};
+@@ -849,10 +1078,19 @@ static int init_d3d12(u32 width, u32 height)
+         return -1;
+     }
+ 
+-    /* Create swap chain */
++    /* Create swap chain. With the present pass it is the window's size, and
++     * the guest draws into textures of its own size (render_targets). */
++    pp_read_env();
++    u32 sc_w = width, sc_h = height;
++    if (s_pp.on) {
++        RECT cr;
++        if (GetClientRect(s_d3d.hwnd, &cr) && cr.right > 0 && cr.bottom > 0) { sc_w = (u32)cr.right; sc_h = (u32)cr.bottom; }
++        s_pp.sc_w = sc_w; s_pp.sc_h = sc_h;
++        s_pp.want_w = (LONG)sc_w; s_pp.want_h = (LONG)sc_h;
++    }
+     DXGI_SWAP_CHAIN_DESC1 sc_desc = {0};
+-    sc_desc.Width = width;
+-    sc_desc.Height = height;
++    sc_desc.Width = sc_w;
++    sc_desc.Height = sc_h;
+     sc_desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+     sc_desc.SampleDesc.Count = 1;
+     sc_desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+@@ -917,14 +1155,32 @@ static int init_d3d12(u32 width, u32 height)
+     s_d3d.rtv_heap->lpVtbl->GetCPUDescriptorHandleForHeapStart(s_d3d.rtv_heap, &rtv_handle);
+ 
+     for (u32 i = 0; i < FRAME_COUNT; i++) {
+-        hr = s_d3d.swap_chain->lpVtbl->GetBuffer(
+-            s_d3d.swap_chain, i, &IID_ID3D12Resource, (void**)&s_d3d.render_targets[i]);
++        if (s_pp.on) {
++            /* A plain texture at the guest's size, in COMMON (= PRESENT), so
++             * every transition the frame already makes stays valid. */
++            D3D12_HEAP_PROPERTIES hp = {0};
++            hp.Type = D3D12_HEAP_TYPE_DEFAULT;
++            D3D12_RESOURCE_DESC rd = {0};
++            rd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
++            rd.Width = width; rd.Height = height; rd.DepthOrArraySize = 1; rd.MipLevels = 1;
++            rd.Format = DXGI_FORMAT_R8G8B8A8_UNORM; rd.SampleDesc.Count = 1;
++            rd.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
++            hr = s_d3d.device->lpVtbl->CreateCommittedResource(s_d3d.device, &hp, D3D12_HEAP_FLAG_NONE, &rd,
++                     D3D12_RESOURCE_STATE_COMMON, NULL, &IID_ID3D12Resource, (void**)&s_d3d.render_targets[i]);
++        } else {
++            hr = s_d3d.swap_chain->lpVtbl->GetBuffer(
++                s_d3d.swap_chain, i, &IID_ID3D12Resource, (void**)&s_d3d.render_targets[i]);
++        }
+         if (FAILED(hr)) return -1;
+ 
+         s_d3d.device->lpVtbl->CreateRenderTargetView(
+             s_d3d.device, s_d3d.render_targets[i], NULL, rtv_handle);
+         rtv_handle.ptr += s_d3d.rtv_descriptor_size;
+     }
++    if (s_pp.on && pp_init() != 0) {
++        printf("[D3D12] present pass unavailable\n");
++        return -1;
++    }
+ 
+     /* ---------------------------------------------------------------
+      * Depth/stencil buffer
+@@ -2242,10 +2498,17 @@ static void rsx_sampler_desc(const u32 k[4], D3D12_SAMPLER_DESC* s)
+     const int mip_lin = minf == 5 || minf == 6 || minf == 7;
+     const int mag_lin = magf == 2 || magf == 4;
+     static const u8 aniso[8] = { 1, 2, 4, 6, 8, 10, 12, 16 };
++    /* D3D12_ANISO=<n>: at least n-times anisotropic filtering on the textures
++     * the guest filters smoothly, for floors and roads seen at a slant.
++     * Point-sampled ones (text, sprites) keep the guest's filter. */
++    static int force = -1;
++    if (force < 0) { const char* e = getenv("D3D12_ANISO"); force = e ? atoi(e) : 0; if (force > 16) force = 16; }
++    u32 want_aniso = aniso[(ctrl0 >> 4) & 7u];
++    if ((int)want_aniso < force && min_lin && mag_lin) want_aniso = (u32)force;
+     memset(s, 0, sizeof *s);
+-    if (aniso[(ctrl0 >> 4) & 7u] > 1 && min_lin && mag_lin) {
++    if (want_aniso > 1 && min_lin && mag_lin) {
+         s->Filter = D3D12_FILTER_ANISOTROPIC;
+-        s->MaxAnisotropy = aniso[(ctrl0 >> 4) & 7u];
++        s->MaxAnisotropy = want_aniso;
+     } else {
+         s->Filter = (D3D12_FILTER)((min_lin << 4) | (mag_lin << 2) | mip_lin);
+         s->MaxAnisotropy = 1;
+@@ -4619,6 +4882,80 @@ static void guest_fb_present(u32 fi)
+ }
+ 
+ 
++/* A resize from WM_SIZE, applied with the GPU idle: ResizeBuffers wants every
++ * reference to the old buffers gone. This frame's command list has not
++ * touched them yet; the frames in flight are drained first. */
++static void pp_resize_if_needed(void)
++{
++    const LONG w = s_pp.want_w, h = s_pp.want_h;
++    if (w <= 0 || h <= 0 || ((u32)w == s_pp.sc_w && (u32)h == s_pp.sc_h)) return;
++    wait_for_gpu();
++    for (u32 i = 0; i < FRAME_COUNT; i++)
++        if (s_pp.sc[i]) { s_pp.sc[i]->lpVtbl->Release(s_pp.sc[i]); s_pp.sc[i] = NULL; }
++    HRESULT hr = s_d3d.swap_chain->lpVtbl->ResizeBuffers(s_d3d.swap_chain, FRAME_COUNT, (UINT)w, (UINT)h,
++                     DXGI_FORMAT_R8G8B8A8_UNORM, s_d3d.tearing ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0);
++    if (FAILED(hr)) printf("[D3D12] present pass: ResizeBuffers %ldx%ld failed (0x%08lX)\n", w, h, hr);
++    else { s_pp.sc_w = (u32)w; s_pp.sc_h = (u32)h; }
++    if (pp_get_buffers() != 0) printf("[D3D12] present pass: swap chain buffers lost after a resize\n");
++}
++
++/* The guest frame (render_targets[fi], in COMMON) into the swap chain's
++ * current buffer, with the player's filter. The last thing the frame records. */
++static void present_pass(u32 fi)
++{
++    pp_resize_if_needed();
++    ID3D12GraphicsCommandList* cl = s_d3d.cmd_list;
++    const u32 bi = s_d3d.swap_chain->lpVtbl->GetCurrentBackBufferIndex(s_d3d.swap_chain);
++    if (!s_pp.sc[bi]) return;
++    D3D12_RESOURCE_BARRIER b[2] = {0};
++    b[0].Type = b[1].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
++    b[0].Transition.pResource = s_d3d.render_targets[fi];
++    b[0].Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
++    b[0].Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
++    b[1].Transition.pResource = s_pp.sc[bi];
++    b[1].Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
++    b[1].Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
++    b[0].Transition.Subresource = b[1].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
++    cl->lpVtbl->ResourceBarrier(cl, 2, b);
++
++    D3D12_CPU_DESCRIPTOR_HANDLE rtv;
++    s_pp.rtv_heap->lpVtbl->GetCPUDescriptorHandleForHeapStart(s_pp.rtv_heap, &rtv);
++    rtv.ptr += (SIZE_T)bi * s_pp.rtv_inc;
++    cl->lpVtbl->OMSetRenderTargets(cl, 1, &rtv, FALSE, NULL);
++    static const float black[4] = {0, 0, 0, 1};
++    cl->lpVtbl->ClearRenderTargetView(cl, rtv, black, 0, NULL);
++
++    /* The rectangle the frame fills: the whole window, or the largest one
++     * with the guest's shape, centred, with black bars around it. */
++    const float sw = (float)s_pp.sc_w, sh = (float)s_pp.sc_h, gw = (float)s_d3d.width, gh = (float)s_d3d.height;
++    float dw = sw, dh = sh;
++    if (s_pp.keep_aspect) {
++        const float k = sw / gw < sh / gh ? sw / gw : sh / gh;
++        dw = (float)(int)(gw * k + 0.5f); dh = (float)(int)(gh * k + 0.5f);
++    }
++    D3D12_VIEWPORT vp = { (float)(int)((sw - dw) * 0.5f), (float)(int)((sh - dh) * 0.5f), dw, dh, 0.f, 1.f };
++    D3D12_RECT sc = { 0, 0, (LONG)s_pp.sc_w, (LONG)s_pp.sc_h };
++    cl->lpVtbl->RSSetViewports(cl, 1, &vp);
++    cl->lpVtbl->RSSetScissorRects(cl, 1, &sc);
++    cl->lpVtbl->SetGraphicsRootSignature(cl, s_pp.root);
++    cl->lpVtbl->SetPipelineState(cl, s_pp.pso);
++    cl->lpVtbl->SetDescriptorHeaps(cl, 1, &s_pp.srv_heap);
++    const float k[8] = { gw, gh, dw, dh, s_pp.scaler, s_pp.fxaa, s_pp.sharpen, s_pp.gamma };
++    cl->lpVtbl->SetGraphicsRoot32BitConstants(cl, 0, 8, k, 0);
++    D3D12_GPU_DESCRIPTOR_HANDLE srv;
++    s_pp.srv_heap->lpVtbl->GetGPUDescriptorHandleForHeapStart(s_pp.srv_heap, &srv);
++    srv.ptr += (UINT64)fi * s_pp.srv_inc;
++    cl->lpVtbl->SetGraphicsRootDescriptorTable(cl, 1, srv);
++    cl->lpVtbl->IASetPrimitiveTopology(cl, D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
++    cl->lpVtbl->DrawInstanced(cl, 3, 1, 0, 0);
++
++    b[0].Transition.StateBefore = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
++    b[0].Transition.StateAfter = D3D12_RESOURCE_STATE_COMMON;
++    b[1].Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
++    b[1].Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
++    cl->lpVtbl->ResourceBarrier(cl, 2, b);
++}
++
+ static void render_frame(void)
+ {
+     double _rf0 = perf_on() ? perf_now() : 0.0;
+@@ -5953,6 +6290,9 @@ skip_dump_consider: ;
+         s_d3d.cmd_list->lpVtbl->ResourceBarrier(s_d3d.cmd_list, 1, &barrier);
+     }
+ 
++    /* The guest frame into the window-sized swap chain buffer. */
++    if (s_pp.on && s_present_this_frame) present_pass(fi);
++
+     /* Close and execute. The fence makes the vertex buffer's streaming stores
+      * (rsx_fetch_vertex_stream) visible before the GPU reads it. */
+     _mm_sfence();
