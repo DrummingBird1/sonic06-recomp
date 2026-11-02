@@ -24,7 +24,7 @@ The launcher installs the rest after asking: LLVM, CMake, Ninja, Git, uv and Pow
 
 ## Getting started
 
-Run `Launcher.exe` (or `Sonic06.cmd` in a checkout) and press **Set up everything**. It lists what it will do, then:
+Run `Launcher.exe` (or `Sonic06.cmd` in a checkout), open **Setup** and press **Set up everything**. It lists what it will do, then:
 
 1. installs the missing build tools,
 2. copies your disc into `game/`,
@@ -32,7 +32,13 @@ Run `Launcher.exe` (or `Sonic06.cmd` in a checkout) and press **Set up everythin
 4. downloads FFmpeg and ps3recomp,
 5. translates the game code and builds it. This is the long part: about 17 minutes on a fast PC with 32 GB, and longer on a slower one or with less memory.
 
-Then choose your settings on the **Play** tab (window size or fullscreen, VSync, language, sound, keyboard) and press **Play**.
+Then press **Play**. The other pages:
+
+- **Graphics:** window or borderless fullscreen, window size, aspect ratio (keep 16:9 or stretch), VSync, the upscaling filter (smooth, sharp pixels, bicubic, nearest), sharpening, FXAA, texture filtering and brightness, with performance, balanced and quality presets. The game draws at 1280×720; these choose how that picture reaches your screen.
+- **Settings:** the launcher's language and the game's, sound, the keyboard as a controller, and whether Esc closes the game (off by default, so pausing never quits).
+- **Support:** update and rebuild, a bug report, the logs.
+
+The launcher speaks English, Hebrew, Spanish, French, German, Italian, Portuguese (Brazil), Japanese, Russian and Arabic, and starts in your Windows language. The translations have not been checked by native speakers yet: corrections to `launcher/Strings/*.json` are welcome.
 
 A controller works through XInput. Without one, the keyboard is the pad: arrows move, Z jumps, Enter is START. The full table is in the handoff document.
 
