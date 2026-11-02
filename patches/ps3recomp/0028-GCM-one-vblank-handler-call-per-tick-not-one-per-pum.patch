@@ -1,0 +1,104 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: DrummingBird1 <1979036+DrummingBird1@users.noreply.github.com>
+Date: Mon, 2 Nov 2026 19:31:49 +0200
+Subject: [PATCH] GCM: one vblank handler call per tick, not one per pump
+
+Vblank delivery was bit0 of s_gcm_pending, so two ticks before the next
+pump ran the guest handler once. The ticker catches up in a burst after a
+long drain, and Sonic 06 paces its frames by counting handler calls (its
+main thread sets a flag and sleeps in 1 ms steps until the handler has
+run twice in a scene). GCM_PUMP_DBG showed 24 of 1365 vblanks lost in the
+first scene, up to 26% while loading, each one a frame that waited a
+vblank more.
+
+Each tick now owes one call (s_vblank_owed); the pump pays what is owed,
+at most VBLANK_OWED_MAX (4) at once so a long stall does not replay
+seconds of vblanks. GCM_VBLANK_MERGE=1 goes back. First scene, 4
+alternating pairs with the same exe: 28.9 -> 29.4 flips/s, faster in
+every pair; delivered calls now match ticks.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ libs/video/cellGcmSys.c | 42 +++++++++++++++++++++++++++++++++++------
+ 1 file changed, 36 insertions(+), 6 deletions(-)
+
+diff --git a/libs/video/cellGcmSys.c b/libs/video/cellGcmSys.c
+index d6b47527..84a424fb 100644
+--- a/libs/video/cellGcmSys.c
++++ b/libs/video/cellGcmSys.c
+@@ -771,6 +771,24 @@ static atomic_flag s_gcm_pumping = ATOMIC_FLAG_INIT;
+ #define GCM_PUMP_LEAVE()     atomic_flag_clear_explicit(&s_gcm_pumping, memory_order_release)
+ #endif
+ 
++/* Vblanks not yet delivered. bit0 of s_gcm_pending used to be all there was,
++ * so two ticks before the next pump ran the handler once. The ticker catches
++ * up in a burst after a long drain, and Sonic 06 -- which counts handler calls
++ * to pace its frames, two vblanks a frame in a scene -- lost 1.8% of them that
++ * way and waited a vblank more. Each tick now owes one call. At most
++ * VBLANK_OWED_MAX are paid in one pump, so a long stall does not replay
++ * seconds of vblanks at once. GCM_VBLANK_MERGE=1 goes back to one call. */
++#define VBLANK_OWED_MAX 4
++#ifdef _WIN32
++static volatile LONG s_vblank_owed = 0;
++#define VBLANK_OWE()  InterlockedIncrement(&s_vblank_owed)
++#define VBLANK_TAKE() InterlockedExchange(&s_vblank_owed, 0)
++#else
++static atomic_int s_vblank_owed = 0;
++#define VBLANK_OWE()  atomic_fetch_add(&s_vblank_owed, 1)
++#define VBLANK_TAKE() atomic_exchange(&s_vblank_owed, 0)
++#endif
++
+ /* Called by the vblank ticker thread. NO guest code -- advance the vblank count
+  * and mark a vblank+flip tick pending for the main thread to deliver. */
+ static u32 s_fifo_getoff;   /* tentative: defined below */
+@@ -778,6 +796,7 @@ static u32 s_fifo_getoff;   /* tentative: defined below */
+ void cellGcm_request_tick(void)
+ {
+     s_vblank_count++;
++    VBLANK_OWE();
+     /* GCM_FLIP_NEEDS_FIFO=1: only mark a flip pending once the walker has
+      * actually consumed up to `put`.
+      *
+@@ -844,17 +863,28 @@ void ppu_gcm_pump(void)
+     if (!GCM_PUMP_TRY_ENTER()) return;
+     long p = (long)GCM_PENDING_TAKE();
+     u64 user = GCM_USER_PENDING_TAKE();
++    long nvb = 0;   /* vblank handler calls owed by this pump */
++    if (p & 1) {
++        static int merge = -1;
++        if (merge < 0) merge = getenv("GCM_VBLANK_MERGE") ? 1 : 0;
++        /* 0 when a tick landed between the two takes: its call was paid with
++         * the earlier ones, and its pending bit has nothing left to pay. */
++        nvb = merge ? 1 : (long)VBLANK_TAKE();
++        if (nvb > VBLANK_OWED_MAX) nvb = VBLANK_OWED_MAX;
++    }
+     /* GCM_PUMP_DBG=1: how often each guest handler is actually delivered. */
+     { static int d = -1; static unsigned nv, nf, calls;
+       if (d < 0) d = getenv("GCM_PUMP_DBG") ? 1 : 0;
+-      if (d) { calls++; if (p & 1) nv++; if (p & 2) nf++;
++      if (d) { calls++; nv += (unsigned)nvb; if (p & 2) nf++;
+                if ((calls % 20000) == 0)
+                    fprintf(stderr, "[gcm-pump] calls=%u vblank=%u flip=%u vcount=%u%c",
+                            calls, nv, nf, s_vblank_count, 10); } }
+-    if ((p & 1) && s_vblank_handler_opd && g_ps3_guest_caller) {
+-        ydkj_restore_handler_opd(s_vblank_handler_opd, s_vblank_handler_code);
+-        g_ps3_guest_caller(s_vblank_handler_opd, (uint64_t)s_vblank_count,
+-                           0, 0, 0, 0, 0, 0, 0);
++    if (nvb > 0 && s_vblank_handler_opd && g_ps3_guest_caller) {
++        for (long k = nvb - 1; k >= 0; k--) {
++            ydkj_restore_handler_opd(s_vblank_handler_opd, s_vblank_handler_code);
++            g_ps3_guest_caller(s_vblank_handler_opd, (uint64_t)(u32)(s_vblank_count - (u32)k),
++                               0, 0, 0, 0, 0, 0, 0);
++        }
+     }
+     if (p & 2) {
+         /* Delivery waits for a guest thread to reach an HLE call or a timer
+@@ -883,7 +913,7 @@ void ppu_gcm_pump(void)
+ 
+ /* Back-compat: the old direct entry points now just mark a tick pending (so any
+  * caller other than the ticker still works) -- delivery stays on the main thread. */
+-void cellGcmTickVBlank(void) { s_vblank_count++; GCM_PENDING_SET(1); }
++void cellGcmTickVBlank(void) { s_vblank_count++; VBLANK_OWE(); GCM_PENDING_SET(1); }
+ /* Only deliver a flip completion when a flip is actually outstanding.
+  *
+  * Ticking unconditionally at 60 Hz fires the guest's flip handler even when

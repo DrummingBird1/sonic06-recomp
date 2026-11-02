@@ -1,0 +1,123 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: DrummingBird1 <1979036+DrummingBird1@users.noreply.github.com>
+Date: Mon, 2 Nov 2026 19:31:49 +0200
+Subject: [PATCH] vblank ticker: the 60 Hz vblank on a thread of its own
+
+The vblank tick shared vblank_ticker with the FIFO drain and present, so a
+long drain made it late: in Sonic 06's first scene half the ticks fired
+more than 4 ms late, mean 3-8 ms, up to 98 ms (GCM_TICK_STATS=1, new). A
+title that paces its frames on vblank handler calls is released late by
+every late tick. On Windows a high-priority thread now ticks on a
+high-resolution waitable timer: mean 0.3 ms late, at most 1.8 ms.
+Flip completion stays in the ticker, where the drain decides when a flip
+has happened. GCM_VBLANK_THREAD=0 goes back; other hosts keep the tick in
+the ticker.
+
+First scene, 3 alternating pairs: 29.07 -> 29.27 flips/s, within the
+noise. Wave Ocean split screen, 2 pairs: 59.4 and 59.8 with the thread;
+59.7 and 55.9 without it, the slow run being the one whose ticks were
+late (mean 4.2 ms). Frames of both checked.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ runtime/ppu/tests/boot_main.cpp | 73 ++++++++++++++++++++++++++++++++-
+ 1 file changed, 72 insertions(+), 1 deletion(-)
+
+diff --git a/runtime/ppu/tests/boot_main.cpp b/runtime/ppu/tests/boot_main.cpp
+index 7635ec4f..fef9d32a 100644
+--- a/runtime/ppu/tests/boot_main.cpp
++++ b/runtime/ppu/tests/boot_main.cpp
+@@ -447,6 +447,71 @@ static DWORD WINAPI guest_prof_thread(LPVOID)
+ 
+ extern "C" const char* cellGame_get_title(void);   /* PARAM.SFO TITLE, for the caption */
+ 
++/* GCM_TICK_STATS=1: how late each vblank tick fires, every 5 s. In
++ * vblank_ticker a long drain or present delays the ticks, and the catch-up
++ * fires several in a row ("bursts"); on vblank_clock they should be on time. */
++static void tick_stats(unsigned long long due, int nth)
++{
++    static int on = -1;
++    if (on < 0) on = getenv("GCM_TICK_STATS") ? 1 : 0;
++    if (!on) return;
++    static unsigned long long win, sum, mx;
++    static unsigned n, burst, late4;
++    const unsigned long long now = ps3_qpc_us(), late = now > due ? now - due : 0;
++    if (!win) win = now;
++    n++; sum += late;
++    if (late > mx) mx = late;
++    if (late > 4000) late4++;
++    if (nth == 1) burst++;
++    if (now - win >= 5000000ull) {
++        fprintf(stderr, "[tick-stats] %u ticks in %.1f s; late mean %.2f ms, max %.1f ms, %u over 4 ms; %u bursts\n",
++                n, (double)(now - win) / 1e6, (double)sum / 1000.0 / n, (double)mx / 1000.0, late4, burst);
++        win = now; sum = mx = 0; n = burst = late4 = 0;
++    }
++}
++
++/* The 60 Hz vblank on a thread of its own (Windows; GCM_VBLANK_THREAD=0 puts
++ * it back in vblank_ticker). In the ticker it shared a thread with the FIFO
++ * drain and present: in Sonic 06's first scene half the ticks fired more than
++ * 4 ms late, up to 98 ms, and the title paces its frames on vblank handler
++ * calls, so each late tick released its main thread late. Flip completion
++ * stays in the ticker, where the drain decides when a flip has happened. */
++static int vblank_threaded(void)
++{
++#ifdef _WIN32
++    static int on = -1;
++    if (on < 0) { const char* e = getenv("GCM_VBLANK_THREAD"); on = !(e && !strcmp(e, "0")); }
++    return on;
++#else
++    return 0;
++#endif
++}
++
++#ifdef _WIN32
++static DWORD WINAPI vblank_clock(LPVOID)
++{
++    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
++    HANDLE t = CreateWaitableTimerExW(NULL, NULL, 0x00000002 /* CREATE_WAITABLE_TIMER_HIGH_RESOLUTION */,
++                                      TIMER_ALL_ACCESS);
++    if (!t) t = CreateWaitableTimerW(NULL, TRUE, NULL);
++    unsigned long long t0 = ps3_qpc_us(), k = 0;
++    for (;;) {
++        const unsigned long long due = t0 + k * 1000000ull / 60, now = ps3_qpc_us();
++        if (now < due) {
++            LARGE_INTEGER d;
++            d.QuadPart = -(LONGLONG)((due - now) * 10);
++            if (t && SetWaitableTimer(t, &d, 0, NULL, NULL, FALSE)) WaitForSingleObject(t, 50);
++            else Sleep(1);
++            continue;
++        }
++        tick_stats(due, 0);
++        cellGcmTickVBlank();
++        k++;
++        if (now - due > 250000) { t0 = now; k = 1; }   /* stopped for a while (debugger): resync */
++    }
++}
++#endif
++
+ static DWORD WINAPI vblank_ticker(LPVOID)
+ {
+     /* Window caption: $PS3_TITLE wins, else the TITLE field PARAM.SFO already
+@@ -507,7 +572,10 @@ static DWORD WINAPI vblank_ticker(LPVOID)
+         unsigned long long now = ps3_qpc_us();
+         int fired = 0;
+         while (now >= tick_t0 + tick_k * 1000000ull / 60 && fired < 240) {
+-            cellGcmTickVBlank();
++            if (!vblank_threaded()) {
++                tick_stats(tick_t0 + tick_k * 1000000ull / 60, fired);
++                cellGcmTickVBlank();
++            }
+             cellGcmTickFlip();
+             /* Present a pending flip BEFORE draining further: the flip fires
+              * at a get==put frame boundary (guest thread), so the batch held
+@@ -1220,6 +1288,9 @@ int main(int argc, char** argv)
+      * frame clock now runs everywhere. Without it a POSIX host never ticks
+      * vblank or drains the FIFO, and the guest waits on fences forever. */
+     CreateThread(NULL, 4u * 1024 * 1024, vblank_ticker, NULL, 0, NULL);
++#ifdef _WIN32
++    if (vblank_threaded()) CreateThread(NULL, 0, vblank_clock, NULL, 0, NULL);
++#endif
+     if (getenv("PS3_GUEST_PROF"))
+         CreateThread(NULL, 0, guest_prof_thread, NULL, 0, NULL);
+ #ifdef _WIN32
