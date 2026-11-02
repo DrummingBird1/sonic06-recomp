@@ -17,6 +17,9 @@ namespace Sonic06Launcher
         readonly List<string> logLines = new List<string>();
         readonly List<Control> actions = new List<Control>();
         Process game;
+        TabControl tabs;
+
+        public void SelectTab(int i) => tabs.SelectedIndex = Math.Max(0, Math.Min(i, tabs.TabCount - 1));
 
         readonly ListView status = new ListView();
         readonly TextBox logBox = new TextBox();
@@ -30,12 +33,19 @@ namespace Sonic06Launcher
         {
             setup = new Setup(cfg, Log, Progress);
             settings = GameSettings.Load(cfg);
+            // Every size below is in 96-DPI pixels; WinForms scales them to the
+            // monitor, as the designer's generated code does. Without it, at 150%
+            // the fonts grew and the boxes did not, and the text was cut off.
+            SuspendLayout();
+            AutoScaleDimensions = new SizeF(96f, 96f);
+            AutoScaleMode = AutoScaleMode.Dpi;
             Text = "sonic06-recomp launcher";
             Font = new Font("Segoe UI", 9f);
-            ClientSize = new Size(940, 680);
+            ClientSize = new Size(940, 700);
             MinimumSize = new Size(800, 600);
             StartPosition = FormStartPosition.CenterScreen;
             BuildUi();
+            ResumeLayout(false);
             Shown += (s, e) => RefreshStatus();
         }
 
@@ -43,16 +53,16 @@ namespace Sonic06Launcher
 
         void BuildUi()
         {
-            var header = new Panel { Dock = DockStyle.Top, Height = 58, Padding = new Padding(12, 8, 12, 0) };
+            var header = new Panel { Dock = DockStyle.Top, Height = 76, Padding = new Padding(12, 8, 12, 0) };
             header.Controls.Add(new Label
             {
                 Text = "An unofficial PC port of the PlayStation 3 version (BLES00028). It is built on this PC from your own disc;" +
                        " nothing from the game comes with the launcher.",
-                Dock = DockStyle.Top, Height = 20, ForeColor = SystemColors.GrayText,
+                Dock = DockStyle.Top, Height = 34, ForeColor = SystemColors.GrayText,
             });
-            header.Controls.Add(new Label { Text = "sonic06-recomp", Dock = DockStyle.Top, Height = 28, Font = new Font("Segoe UI Semibold", 14f) });
+            header.Controls.Add(new Label { Text = "sonic06-recomp", Dock = DockStyle.Top, Height = 32, Font = new Font("Segoe UI Semibold", 14f) });
 
-            var tabs = new TabControl { Dock = DockStyle.Fill };
+            tabs = new TabControl { Dock = DockStyle.Fill };
             tabs.TabPages.Add(SetupTab());
             tabs.TabPages.Add(PlayTab());
             tabs.TabPages.Add(SupportTab());
@@ -82,7 +92,7 @@ namespace Sonic06Launcher
             var page = new TabPage("Setup") { Padding = new Padding(8) };
             status.View = View.Details; status.FullRowSelect = true; status.HeaderStyle = ColumnHeaderStyle.Nonclickable;
             status.Dock = DockStyle.Fill;
-            status.Columns.Add("Step", 260); status.Columns.Add("", 60); status.Columns.Add("Details", 520);
+            status.Columns.Add("Step", 300); status.Columns.Add("", 60); status.Columns.Add("Details", 500);
             var buttons = new FlowLayoutPanel { Dock = DockStyle.Bottom, Height = 124, WrapContents = true };
             buttons.Controls.Add(Action("Set up everything", SetUpEverything, 200));
             buttons.Controls.Add(Action("Install build tools", InstallTools));

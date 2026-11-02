@@ -80,6 +80,22 @@ namespace Sonic06Launcher
             {
                 form.Shown += (o, e) => { File.WriteAllText(args[1], "window ok"); form.Close(); };
             }
+            if (args.Length == 3 && args[0] == "--screenshot" && int.TryParse(args[1], out var tab))
+            {
+                // The window drawn into a PNG by itself (tab 0, 1 or 2), not a
+                // screen capture: nothing else on the screen gets in.
+                form.Shown += async (o, e) =>
+                {
+                    form.SelectTab(tab);
+                    await System.Threading.Tasks.Task.Delay(1500);   // the status check fills in
+                    using (var bmp = new System.Drawing.Bitmap(form.Width, form.Height))
+                    {
+                        form.DrawToBitmap(bmp, new System.Drawing.Rectangle(0, 0, form.Width, form.Height));
+                        bmp.Save(args[2], System.Drawing.Imaging.ImageFormat.Png);
+                    }
+                    form.Close();
+                };
+            }
             Application.Run(form);
             return 0;
         }

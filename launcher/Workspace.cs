@@ -18,7 +18,9 @@ namespace Sonic06Launcher
         public static bool Find()
         {
             for (var d = new DirectoryInfo(AppDomain.CurrentDomain.BaseDirectory); d != null; d = d.Parent)
-                if (File.Exists(Path.Combine(d.FullName, "tools", "build.ps1"))) { Root = d.FullName; return true; }
+                // TrimEnd: the base directory keeps its trailing backslash, and
+                // Root is cut off the front of paths for the log.
+                if (File.Exists(Path.Combine(d.FullName, "tools", "build.ps1"))) { Root = d.FullName.TrimEnd('\\'); return true; }
             return false;
         }
 

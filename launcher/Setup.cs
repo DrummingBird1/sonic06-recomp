@@ -52,7 +52,7 @@ namespace Sonic06Launcher
 
         public static readonly ToolPackage[] Packages =
         {
-            new ToolPackage { Name = "Visual Studio Build Tools (C++, CMake)", WingetId = "Microsoft.VisualStudio.BuildTools",
+            new ToolPackage { Name = "VS Build Tools (C++, CMake)", WingetId = "Microsoft.VisualStudio.BuildTools",
                 Override = "--wait --passive --norestart --add Microsoft.VisualStudio.Workload.VCTools " +
                            "--add Microsoft.VisualStudio.Component.VC.CMake.Project --includeRecommended",
                 Present = () => Tools.VisualStudio() != null },
