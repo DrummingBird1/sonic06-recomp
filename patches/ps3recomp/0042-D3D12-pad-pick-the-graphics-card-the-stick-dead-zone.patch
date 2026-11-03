@@ -1,0 +1,121 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: DrummingBird1 <1979036+DrummingBird1@users.noreply.github.com>
+Date: Wed, 4 Nov 2026 00:57:36 +0200
+Subject: [PATCH] D3D12, pad: pick the graphics card, the stick dead zone, F12
+ screenshots
+
+CELLMARK_ADAPTER=<index or part of the name> chooses the adapter, PAD_DEADZONE=<percent>
+replaces the 24% stick dead zone, and F12 with the window in front saves the frame as a
+BMP in D3D12_SCREENSHOT_DIR.
+---
+ libs/input/cellPad.c           | 14 ++++++++++++-
+ libs/video/rsx_d3d12_backend.c | 36 ++++++++++++++++++++++++++++++++++
+ 2 files changed, 49 insertions(+), 1 deletion(-)
+
+diff --git a/libs/input/cellPad.c b/libs/input/cellPad.c
+index ee385f98..5c49f42e 100644
+--- a/libs/input/cellPad.c
++++ b/libs/input/cellPad.c
+@@ -198,7 +198,19 @@ static void pad_rumble_levels(u8 small_on, u8 large, u16* lo, u16* hi)
+ #if PAD_BACKEND_XINPUT
+ 
+ /* Deadzone for analog sticks (same as XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE) */
+-#define PAD_STICK_DEADZONE  7849
++#define PAD_STICK_DEADZONE_DEFAULT  7849
++/* PAD_DEADZONE=<percent of the stick's travel, 0..50> replaces the default (24%). */
++static short pad_stick_deadzone(void)
++{
++    static int dz = -1;
++    if (dz < 0) {
++        const char* e = getenv("PAD_DEADZONE");
++        int pct = e ? atoi(e) : -1;
++        dz = (pct >= 0 && pct <= 50) ? pct * 32767 / 100 : PAD_STICK_DEADZONE_DEFAULT;
++    }
++    return (short)dz;
++}
++#define PAD_STICK_DEADZONE  pad_stick_deadzone()
+ #define PAD_TRIGGER_THRESHOLD 30
+ 
+ /* XInput is resolved at run time. Only XInputGetState and XInputSetState are
+diff --git a/libs/video/rsx_d3d12_backend.c b/libs/video/rsx_d3d12_backend.c
+index e89aae60..270824c0 100644
+--- a/libs/video/rsx_d3d12_backend.c
++++ b/libs/video/rsx_d3d12_backend.c
+@@ -46,6 +46,7 @@
+ #include <d3d12sdklayers.h>   /* ID3D12Debug / ID3D12InfoQueue */
+ #include <dxgi1_4.h>
+ #include <dxgi1_6.h>
++static int adapter_wanted(const DXGI_ADAPTER_DESC1* ad);
+ #include <d3dcompiler.h>
+ 
+ /* Link libraries */
+@@ -1070,6 +1071,7 @@ static int init_d3d12(u32 width, u32 height)
+                      != DXGI_ERROR_NOT_FOUND; ai++) {
+                 DXGI_ADAPTER_DESC1 ad;
+                 adapter->lpVtbl->GetDesc1(adapter, &ad);
++                if (!adapter_wanted(&ad)) { adapter->lpVtbl->Release(adapter); adapter = NULL; continue; }
+                 if (!(ad.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) &&
+                     SUCCEEDED(D3D12CreateDevice((IUnknown*)adapter,
+                         D3D_FEATURE_LEVEL_11_0, &IID_ID3D12Device,
+@@ -1850,6 +1852,23 @@ static void move_to_next_frame(void)
+ /* Name prefix for the next readback dump: lets the same writer emit the
+  * backbuffer and the screen-copy texture under different filenames. */
+ static const char* s_dump_name = NULL;
++static int s_shot_pending = 0;   /* the dump in flight is an F12 screenshot */
++
++/* CELLMARK_ADAPTER=<index> or a part of the adapter's name (not case sensitive) picks
++ * the graphics card; without it the high-performance one is used, as before. */
++static int adapter_wanted(const DXGI_ADAPTER_DESC1* ad)
++{
++    static const char* want = (const char*)-1;
++    if (want == (const char*)-1) want = getenv("CELLMARK_ADAPTER");
++    if (!want || !*want) return 1;
++    char name[256]; size_t i = 0;
++    for (; i + 1 < sizeof(name) && ad->Description[i]; i++) name[i] = (char)ad->Description[i];
++    name[i] = 0;
++    for (char* p = name; *p; p++) if (*p >= 'A' && *p <= 'Z') *p += 32;
++    char w[128]; snprintf(w, sizeof(w), "%s", want);
++    for (char* p = w; *p; p++) if (*p >= 'A' && *p <= 'Z') *p += 32;
++    return strstr(name, w) != NULL;
++}
+ 
+ static void dump_backbuffer_bmp(void)
+ {
+@@ -1862,6 +1881,14 @@ static void dump_backbuffer_bmp(void)
+     static int idx = 0;
+     char path[512];
+     const char* dir = getenv("CELLMARK_DUMP_DIR");   /* default: current dir */
++    if (s_shot_pending) {
++        /* An F12 screenshot: D3D12_SCREENSHOT_DIR, named by the time so a run never overwrites one. */
++        const char* sd = getenv("D3D12_SCREENSHOT_DIR");
++        SYSTEMTIME st; GetLocalTime(&st);
++        snprintf(path, sizeof(path), "%s%sSonic06-%04d%02d%02d-%02d%02d%02d-%03d.bmp",
++                 sd ? sd : "", sd ? "/" : "", st.wYear, st.wMonth, st.wDay,
++                 st.wHour, st.wMinute, st.wSecond, st.wMilliseconds);
++    } else
+     snprintf(path, sizeof(path), "%s%s%s_%03d.bmp",
+              dir ? dir : "", dir ? "/" : "", s_dump_name ? s_dump_name : "frame", idx++);
+     FILE* f = fopen(path, "wb");
+@@ -5499,6 +5526,14 @@ static void render_frame(void)
+         compile_vp();
+     /* Per-draw VP constants are snapshotted at record time (vp_record_cb). */
+ 
++    /* F12, with the game window in front: save this frame as a BMP in D3D12_SCREENSHOT_DIR. */
++    { static int s_f12_down = 0;
++      int down = s_d3d.hwnd && GetForegroundWindow() == s_d3d.hwnd && (GetAsyncKeyState(VK_F12) & 0x8000);
++      if (down && !s_f12_down && s_d3d.dump_frames_left <= 0) {
++          s_d3d.dump_frames_left = 1; s_d3d.dump_skip_left = 0; s_shot_pending = 1;
++      }
++      s_f12_down = down; }
++
+     /* Lazily create the readback buffer the first time a dump is requested. */
+     if (s_d3d.dump_frames_left > 0 && !s_d3d.readback_buf) {
+         s_d3d.readback_pitch = (rs_px(s_d3d.width) * 4 + 255) & ~255u;
+@@ -6876,6 +6911,7 @@ skip_dump_consider: ;
+         wait_for_gpu();            /* ensure the copy finished before mapping */
+         dump_backbuffer_bmp();
+         s_d3d.dump_frames_left--;
++        s_shot_pending = 0;
+     }
+ 
+     if (s_rtsave_state) {

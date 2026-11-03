@@ -53,6 +53,10 @@ namespace Sonic06Launcher
             new Option(0, "gfx_aniso_off"), new Option(2, "gfx_aniso_n", "2"), new Option(4, "gfx_aniso_n", "4"),
             new Option(8, "gfx_aniso_n", "8"), new Option(16, "gfx_aniso_n", "16"),
         };
+        // The graphics cards Windows reports; the picker shows only when there is a choice.
+        public Option[] AdapterOptions { get; } = new[] { new Option("", "gfx_adapter_auto") }
+            .Concat(GameSettings.Adapters().Select(n => new Option(n, null, n))).ToArray();
+        public bool HasManyAdapters => AdapterOptions.Length > 2;
         public Option[] GameLanguageOptions { get; } = GameSettings.GameLanguages.Select(l => new Option(l.Code, l.Key)).ToArray();
         public Option[] UiLanguageOptions { get; } = Loc.Languages.Select(l => new Option(l.Code, null, l.Native)).ToArray();
 
@@ -243,6 +247,7 @@ namespace Sonic06Launcher
         }
 
         void OnPreset(object s, RoutedEventArgs e) => Settings.Preset((string)((Button)s).Tag);
+        void OnSaveMyPreset(object s, RoutedEventArgs e) => Settings.SaveMyPreset();
 
         void OnPlay(object s, RoutedEventArgs e)
         {

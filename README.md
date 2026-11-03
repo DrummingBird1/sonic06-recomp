@@ -35,8 +35,8 @@ Run `Launcher.exe` (or `Sonic06.cmd` in a checkout), open **Setup** and press **
 
 Then press **Play**. The other pages:
 
-- **Graphics:** window or borderless fullscreen, window size, aspect ratio (keep 16:9 or stretch), VSync, the internal resolution, the upscaling filter (smooth, sharp pixels, bicubic, nearest), sharpening, FXAA, texture filtering and brightness, with performance, balanced and quality presets. The internal resolution is the size the game draws at: 1280×720 as on the PS3, up to 3840×2160, or automatic, which matches your window. On the RTX 4070 SUPER it was tested on, 3840×2160 ran as fast as 1280×720; a weaker graphics card has not been tried.
-- **Settings:** the launcher's language and the game's, sound, the keyboard as a controller, and whether Esc closes the game (off by default, so pausing never quits).
+- **Graphics:** your own preset next to the three built in, a graphics card picker when the PC has more than one, window or borderless fullscreen, window size, aspect ratio (keep 16:9 or stretch), VSync, the internal resolution, the upscaling filter (smooth, sharp pixels, bicubic, nearest), sharpening, FXAA, texture filtering and brightness, with performance, balanced and quality presets. The internal resolution is the size the game draws at: 1280×720 as on the PS3, up to 3840×2160, or automatic, which matches your window. On the RTX 4070 SUPER it was tested on, 3840×2160 ran as fast as 1280×720; a weaker graphics card has not been tried.
+- **Settings:** the stick dead zone, F12 for a screenshot (saved in Pictures\Sonic06), the launcher's language and the game's, sound, the keyboard as a controller, and whether Esc closes the game (off by default, so pausing never quits).
 - **Support:** update and rebuild, a bug report, the logs.
 
 The launcher speaks English, Hebrew, Spanish, French, German, Italian, Portuguese (Brazil), Japanese, Russian and Arabic, and starts in your Windows language. The translations have not been checked by native speakers yet: corrections to `launcher/Strings/*.json` are welcome.

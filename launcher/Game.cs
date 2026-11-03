@@ -19,7 +19,8 @@ namespace Sonic06Launcher
 
         bool fullscreen, vsync = true, mute, keyboard = true, fxaa, escCloses, shaderAsync;
         string windowSize = "1280x720", language = "", aspect = "keep", scaler = "bilinear", resScale = "auto";
-        int sharpen, aniso, brightness = 100;
+        int sharpen, aniso, brightness = 100, deadzone = 24;
+        string adapter = "";
 
         // Display and sound. D3D12_FULLSCREEN, D3D12_WINDOW, D3D12_VSYNC=0, PS3_LANG, PS3_MUTE.
         public bool Fullscreen { get => fullscreen; set => Set(ref fullscreen, value); }
@@ -43,6 +44,40 @@ namespace Sonic06Launcher
         // Shaders compile in the background (patch 0038): D3D12_SHADER_ASYNC. Off by default, because
         // a draw is skipped until its shader is ready.
         public bool ShaderAsync { get => shaderAsync; set => Set(ref shaderAsync, value); }
+
+        // The graphics card (CELLMARK_ADAPTER, a part of its name); "" is the high-performance one.
+        public string Adapter { get => adapter; set => Set(ref adapter, value ?? ""); }
+        // How far the stick must move before it counts (PAD_DEADZONE, percent of its travel).
+        public int Deadzone { get => deadzone; set => Set(ref deadzone, Math.Max(0, Math.Min(50, value))); }
+
+        /// <summary>F12 saves a BMP here.</summary>
+        public static string ScreenshotDir => Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.MyPictures), "Sonic06");
+
+        /// <summary>The names of the graphics cards Windows reports, for the picker.</summary>
+        public static string[] Adapters()
+        {
+            try
+            {
+                using (var q = new System.Management.ManagementObjectSearcher("SELECT Name FROM Win32_VideoController"))
+                    return q.Get().Cast<System.Management.ManagementBaseObject>()
+                            .Select(o => (o["Name"] as string ?? "").Trim()).Where(n => n.Length > 0).Distinct().ToArray();
+            }
+            catch (Exception) { return new string[0]; }
+        }
+
+        public bool HasMyPreset => cfg != null && cfg.Str("my_resScale").Length > 0;
+
+        /// <summary>Keeps the picture settings as the player's own preset.</summary>
+        public void SaveMyPreset()
+        {
+            if (cfg == null) return;
+            cfg.Put("my_resScale", resScale); cfg.Put("my_scaler", scaler); cfg.Put("my_sharpen", sharpen.ToString());
+            cfg.Put("my_fxaa", fxaa); cfg.Put("my_aniso", aniso.ToString()); cfg.Put("my_brightness", brightness.ToString());
+            cfg.Put("my_aspect", aspect); cfg.Put("my_vsync", vsync); cfg.Put("my_shaderAsync", shaderAsync);
+            cfg.Save();
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(HasMyPreset)));
+        }
 
         public static readonly string[] Sizes = { "1280x720", "1600x900", "1920x1080", "2560x1440", "3840x2160" };
         public static readonly string[] ResScales = { "1", "1.5", "2", "3" };
@@ -113,6 +148,7 @@ namespace Sonic06Launcher
                 escCloses = c.Bool("escCloses"), aspect = c.Str("aspect", "keep"), scaler = c.Str("scaler", "bilinear"),
                 sharpen = Int(c, "sharpen", 0), fxaa = c.Bool("fxaa"), aniso = Int(c, "aniso", 0), brightness = Int(c, "brightness", 100),
                 resScale = c.Str("resScale", "auto"), shaderAsync = c.Bool("shaderAsync"),
+                adapter = c.Str("adapter"), deadzone = Int(c, "deadzone", 24),
             };
             s.cfg = c;
             return s;
@@ -126,6 +162,7 @@ namespace Sonic06Launcher
             cfg.Put("aspect", aspect); cfg.Put("scaler", scaler); cfg.Put("sharpen", sharpen.ToString());
             cfg.Put("fxaa", fxaa); cfg.Put("aniso", aniso.ToString()); cfg.Put("brightness", brightness.ToString());
             cfg.Put("resScale", resScale); cfg.Put("shaderAsync", shaderAsync);
+            cfg.Put("adapter", adapter); cfg.Put("deadzone", deadzone.ToString());
             cfg.Save();
         }
 
@@ -134,6 +171,13 @@ namespace Sonic06Launcher
         {
             switch (name)
             {
+                case "mine":
+                    if (!HasMyPreset) return;
+                    ResScale = cfg.Str("my_resScale", "auto"); Scaler = cfg.Str("my_scaler", "bilinear");
+                    Sharpen = Int(cfg, "my_sharpen", 0); Fxaa = cfg.Bool("my_fxaa"); Aniso = Int(cfg, "my_aniso", 0);
+                    Brightness = Int(cfg, "my_brightness", 100); Aspect = cfg.Str("my_aspect", "keep");
+                    VSync = cfg.Bool("my_vsync", true); ShaderAsync = cfg.Bool("my_shaderAsync");
+                    break;
                 case "performance": ResScale = "1"; Scaler = "bilinear"; Sharpen = 0; Fxaa = false; Aniso = 0; break;
                 case "balanced": ResScale = "auto"; Scaler = "sharp"; Sharpen = 25; Fxaa = false; Aniso = 4; break;
                 case "quality": ResScale = "auto"; Scaler = "bicubic"; Sharpen = 40; Fxaa = true; Aniso = 16; break;
@@ -161,6 +205,9 @@ namespace Sonic06Launcher
             var res = EffectiveResScale();
             if (res != "1") e["D3D12_RES_SCALE"] = res;
             if (ShaderAsync) e["D3D12_SHADER_ASYNC"] = "1";
+            if (Adapter.Length > 0) e["CELLMARK_ADAPTER"] = Adapter;
+            if (Deadzone != 24) e["PAD_DEADZONE"] = Deadzone.ToString(inv);
+            e["D3D12_SCREENSHOT_DIR"] = ScreenshotDir;
             return e;
         }
     }
@@ -171,6 +218,7 @@ namespace Sonic06Launcher
         public static Process Start(Setup setup, GameSettings s, Action<string> log, Action<int> exited)
         {
             Directory.CreateDirectory(Workspace.Logs);
+            try { Directory.CreateDirectory(GameSettings.ScreenshotDir); } catch (Exception) { /* F12 then has nowhere to save */ }
             var logFile = Path.Combine(Workspace.Logs, $"run-{DateTime.Now:yyyyMMdd-HHmmss}.log");
             var psi = new ProcessStartInfo(Workspace.GameExe, Runner.Quote(Workspace.EbootElf))
             {

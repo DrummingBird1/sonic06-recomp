@@ -153,5 +153,13 @@
   "common_ok": "אישור",
   "common_cancel": "ביטול",
   "common_yes": "כן",
-  "common_no": "לא"
+  "common_no": "לא",
+  "gfx_preset_mine": "שלי",
+  "gfx_preset_save": "שמור כשלי",
+  "gfx_adapter": "כרטיס מסך",
+  "gfx_adapter_desc": "איזה כרטיס מצייר את המשחק. אוטומטי בוחר את המהיר ביותר.",
+  "gfx_adapter_auto": "אוטומטי (המהיר ביותר)",
+  "settings_deadzone": "אזור מת של הסטיק",
+  "settings_deadzone_desc": "כמה הסטיק צריך לזוז כדי שייחשב. מעלים אם הדמות נסחפת.",
+  "settings_screenshot": "F12 שומר צילום מסך ב-Pictures\\Sonic06 כשחלון המשחק בפוקוס."
 }

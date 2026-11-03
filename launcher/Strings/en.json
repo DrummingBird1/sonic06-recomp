@@ -153,5 +153,13 @@
   "common_ok": "OK",
   "common_cancel": "Cancel",
   "common_yes": "Yes",
-  "common_no": "No"
+  "common_no": "No",
+  "gfx_preset_mine": "Mine",
+  "gfx_preset_save": "Save as mine",
+  "gfx_adapter": "Graphics card",
+  "gfx_adapter_desc": "Which card draws the game. Automatic picks the fastest.",
+  "gfx_adapter_auto": "Automatic (fastest)",
+  "settings_deadzone": "Stick dead zone",
+  "settings_deadzone_desc": "How far the stick must move before it counts. Raise it if the character drifts.",
+  "settings_screenshot": "F12 saves a screenshot to Pictures\\Sonic06 while the game window is in front."
 }

@@ -266,6 +266,9 @@
                                     <Button Content="{l:T gfx_preset_performance}" Tag="performance" Click="OnPreset" Margin="0,0,8,0"/>
                                     <Button Content="{l:T gfx_preset_balanced}" Tag="balanced" Click="OnPreset" Margin="0,0,8,0"/>
                                     <Button Content="{l:T gfx_preset_quality}" Tag="quality" Click="OnPreset" Margin="0,0,8,0"/>
+                                    <Button Content="{l:T gfx_preset_mine}" Tag="mine" Click="OnPreset" Margin="0,0,8,0"
+                                            IsEnabled="{Binding Settings.HasMyPreset}"/>
+                                    <Button Content="{l:T gfx_preset_save}" Click="OnSaveMyPreset" Margin="0,0,8,0"/>
                                     <Button Content="{l:T gfx_reset}" Tag="reset" Click="OnPreset"/>
                                 </WrapPanel>
                             </DockPanel>
@@ -273,6 +276,15 @@
                         <Border Style="{StaticResource CardBorder}">
                             <StackPanel>
                                 <TextBlock Text="{l:T gfx_display}" Style="{StaticResource H2}"/>
+                                <Grid Style="{StaticResource Row}" Visibility="{Binding HasManyAdapters, Converter={StaticResource BoolVis}}">
+                                    <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                                    <StackPanel Margin="0,0,20,0">
+                                        <TextBlock Text="{l:T gfx_adapter}"/>
+                                        <TextBlock Text="{l:T gfx_adapter_desc}" Style="{StaticResource Sub}"/>
+                                    </StackPanel>
+                                    <ComboBox Grid.Column="1" ItemsSource="{Binding AdapterOptions}" SelectedValuePath="Value"
+                                              SelectedValue="{Binding Settings.Adapter}" VerticalAlignment="Center" MaxWidth="360"/>
+                                </Grid>
                                 <Grid Style="{StaticResource Row}">
                                     <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                                     <TextBlock Text="{l:T gfx_mode}" VerticalAlignment="Center"/>
@@ -401,6 +413,18 @@
                         <Border Style="{StaticResource CardBorder}">
                             <StackPanel>
                                 <TextBlock Text="{l:T settings_controls}" Style="{StaticResource H2}"/>
+                                <Grid Style="{StaticResource Row}">
+                                    <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="240"/><ColumnDefinition Width="52"/></Grid.ColumnDefinitions>
+                                    <StackPanel Margin="0,0,20,0">
+                                        <TextBlock Text="{l:T settings_deadzone}"/>
+                                        <TextBlock Text="{l:T settings_deadzone_desc}" Style="{StaticResource Sub}"/>
+                                    </StackPanel>
+                                    <Slider Grid.Column="1" Minimum="0" Maximum="50" TickFrequency="1" IsSnapToTickEnabled="True"
+                                            Value="{Binding Settings.Deadzone}" VerticalAlignment="Center"/>
+                                    <TextBlock Grid.Column="2" Text="{Binding Settings.Deadzone, StringFormat={}{0}%}" VerticalAlignment="Center"
+                                               HorizontalAlignment="Right" FlowDirection="LeftToRight"/>
+                                </Grid>
+                                <TextBlock Text="{l:T settings_screenshot}" Style="{StaticResource Sub}" Margin="0,10,0,0" TextWrapping="Wrap"/>
                                 <CheckBox Style="{StaticResource Toggle}" IsChecked="{Binding Settings.Keyboard}" AutomationProperties.Name="{l:T settings_keyboard}" Margin="0,10">
                                     <StackPanel>
                                         <TextBlock Text="{l:T settings_keyboard}"/>
