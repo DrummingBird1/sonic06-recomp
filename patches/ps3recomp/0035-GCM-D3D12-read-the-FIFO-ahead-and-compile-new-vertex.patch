@@ -1,0 +1,363 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: DrummingBird1 <1979036+DrummingBird1@users.noreply.github.com>
+Date: Tue, 3 Nov 2026 14:52:11 +0200
+Subject: [PATCH] GCM/D3D12: read the FIFO ahead and compile new vertex
+ programs on workers
+
+A title uploads each draw's vertex program right before the draw, so no
+program reaches the runtime earlier than the draw that needs it, and the
+shaders new at a scene cut were compiled one after another as the walker
+reached them: four in Sonic the Hedgehog's story scene, 257 ms in a row.
+But the title flushes a whole frame at once.
+
+At the start of each drain pass, gcm_vp_prefetch_scan reads from get to
+put with a shadow of the microcode store, follows JUMPs and one-deep
+CALLs as the walker does (Sonic builds every draw, its program upload
+included, in a buffer of its own that the ring CALLs), and offers each
+program a draw will run to g_rsx_vp_prefetch. The D3D12 backend decompiles
+a new one and compiles it on the system thread pool (shader_prefetch);
+shader_compile then waits for that job instead of compiling it again, and
+the worker writes the shader cache. Read only: the walk is unchanged.
+D3D12_SHADER_PREFETCH=0 turns it off; GCM_PREFETCH_DBG=1 reports what the
+read-ahead covered.
+
+Story scene, first run (empty cache), alternating: the cut's stall
+277-287 ms -> 161-166 ms (18-20 -> 10 vblanks), 29.81 -> 29.90 flips/s;
+34 vertex programs from workers. Fragment programs are not read ahead.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ libs/video/cellGcmSys.c        |  91 +++++++++++++++++
+ libs/video/rsx_d3d12_backend.c | 178 +++++++++++++++++++++++++++++----
+ 2 files changed, 252 insertions(+), 17 deletions(-)
+
+diff --git a/libs/video/cellGcmSys.c b/libs/video/cellGcmSys.c
+index 36e8c8d6..8038e2c2 100644
+--- a/libs/video/cellGcmSys.c
++++ b/libs/video/cellGcmSys.c
+@@ -2096,6 +2096,96 @@ static void gcm_3d_method(rsx_state* st, u32 m, u32 v, int legacy_state_live)
+ }
+ 
+ 
++/* Read-ahead for the backend's shader compiler (g_rsx_vp_prefetch).
++ *
++ * A title uploads each draw's vertex program right before the draw, so no
++ * program reaches the runtime earlier than the draw that needs it. A title
++ * flushes a whole frame at once, though, so when a pass starts every program
++ * the frame will run is already in the FIFO. This reads ahead from `get` to
++ * `put` with a shadow of the microcode store and offers each program a draw
++ * will run to the backend, which compiles the new ones on worker threads.
++ * Sonic the Hedgehog's story scene brings four new programs in at one cut,
++ * and compiled one after another as the walker reached them they stopped it
++ * for 257 ms. Read only: the walk itself is unchanged, and a program read
++ * wrongly here costs a wasted compile and nothing else. CALLs are followed one
++ * deep, as the walker follows them: Sonic builds every draw, its program upload
++ * included, in a buffer of its own that the ring CALLs. */
++void (*g_rsx_vp_prefetch)(const u8* store, u32 bytes, u32 start) = NULL;
++static unsigned s_pf_calls;   /* GCM_PREFETCH_DBG: CALLs the read-ahead followed */
++
++static void gcm_vp_prefetch_scan(const rsx_state* st, u32 put)
++{
++    static u8  shadow[sizeof st->vp_ucode];
++    static u32 at = 0xFFFFFFFFu, cursor, bytes, start;   /* the scan's own state at `at` */
++    if (!g_rsx_vp_prefetch || put == at) return;
++    /* Go on from where the last scan stopped while the walker has not passed
++     * it; otherwise start again at the walker, from its state. */
++    const u32 get = s_fifo_getoff;
++    if (at == 0xFFFFFFFFu || gcm_fifo_backlog(at, get) > gcm_fifo_backlog(put, get)) {
++        memcpy(shadow, st->vp_ucode, sizeof shadow);
++        at = get;
++        cursor = st->vp_ucode_write; bytes = st->vp_ucode_bytes; start = st->transform_program_start;
++    }
++    int dirty = 1;
++    u32 off = at, steps = 0, ret = 0;
++    while (off != put && steps++ < 0x400000u) {
++        const u32 ea = gcm_io2ea(off);
++        if (!ea) break;
++        const u32 w = vm_read32(ea);
++        if ((w >> 29) == 1u) {                                  /* JUMP, as the walker reads it */
++            const u32 tgt = w & 0x1FFFFFFCu;
++            if (tgt == off || !gcm_io2ea(tgt)) break;           /* a park, or nowhere */
++            off = tgt;
++            continue;
++        }
++        if ((w & 3u) == 2u) {                                   /* CALL, one deep */
++            const u32 tgt = w & 0x1FFFFFFCu;
++            if (ret || !gcm_io2ea(tgt)) break;
++            ret = off + 4; off = tgt; s_pf_calls++;
++            continue;
++        }
++        if (w == 0x00020000u) {                                 /* RET */
++            if (!ret) break;
++            off = ret; ret = 0;
++            continue;
++        }
++        const u32 type = w >> 29;
++        if (type != 0 && type != 2) break;
++        const u32 count = (w >> 18) & 0x7FFu, method = w & 0x1FFCu, subch = (w >> 13) & 7u;
++        const u32 last = type == 0 ? method + (count ? count - 1 : 0) * 4 : method;
++        /* Only the methods that matter here are read: the program words
++         * (0x0B80-0x0BFC), its load slot (0x1E9C) and start (0x1EA0), and
++         * SET_BEGIN_END (0x1808) with a primitive, where a draw begins. */
++        if (subch <= 1 && count && !(last < 0x0B80u || (method > 0x0BFCu && last < 0x1808u) ||
++                                     (method > 0x1808u && last < 0x1E9Cu) || method > 0x1EA0u)) {
++            for (u32 i = 0; i < count; i++) {
++                const u32 m = type == 0 ? method + i * 4 : method;
++                if (!(m >= 0x0B80u && m < 0x0C00u) && m != 0x1E9Cu && m != 0x1EA0u && m != 0x1808u) continue;
++                const u32 dea = gcm_io2ea(off + 4 + i * 4);
++                if (!dea) break;
++                const u32 v = vm_read32(dea);
++                if (m == 0x1E9Cu) cursor = v * 16u;
++                else if (m == 0x1EA0u) { if (start != v) dirty = 1; start = v; }
++                else if (m == 0x1808u) { if (v && dirty) { g_rsx_vp_prefetch(shadow, bytes, start); dirty = 0; } }
++                else if (cursor + 4 <= sizeof shadow) {          /* as rsx_vp_ucode_word stores it */
++                    const u8 b[4] = { (u8)v, (u8)(v >> 8), (u8)(v >> 16), (u8)(v >> 24) };
++                    if (memcmp(shadow + cursor, b, 4)) { memcpy(shadow + cursor, b, 4); dirty = 1; }
++                    cursor += 4;
++                    if (cursor > bytes) bytes = cursor;
++                }
++            }
++        }
++        off += 4 + count * 4;
++    }
++    /* GCM_PREFETCH_DBG=1: what the read-ahead covered, every 300 passes. */
++    { static int dbg = -1; static unsigned passes;
++      if (dbg < 0) dbg = getenv("GCM_PREFETCH_DBG") ? 1 : 0;
++      if (dbg && passes++ % 300 == 0)
++          fprintf(stderr, "[prefetch] pass %u: get=%08X put=%08X scanned to %08X in %u words, cursor=%u bytes=%u start=%u calls=%u%c",
++                  passes, get, put, off, steps, cursor, bytes, start, s_pf_calls, 10); }
++    at = ret ? 0xFFFFFFFFu : off;   /* stopped inside a CALL: start again next time */
++}
++
+ /* The diagnostic switches below are tested on every drain pass, and GCM_RECDBG
+  * on every semaphore method. getenv walks the whole environment and showed in
+  * RSX-thread profiles, so each is read once and cached, like the other knobs. */
+@@ -2231,6 +2321,7 @@ static void gcm_rsx_process_fifo_unlocked(void)
+           fflush(stderr);
+       } }
+ 
++    gcm_vp_prefetch_scan(&s_state, put);
+     int budget = 0x100000;                    /* words per tick cap */
+     /* GCM_DRAINDBG also reports WHY each pass stopped. A drain that ends far
+      * short of `put` every tick is the signature of a FIFO that can never
+diff --git a/libs/video/rsx_d3d12_backend.c b/libs/video/rsx_d3d12_backend.c
+index 6624e71b..f8ae1203 100644
+--- a/libs/video/rsx_d3d12_backend.c
++++ b/libs/video/rsx_d3d12_backend.c
+@@ -2382,25 +2382,135 @@ static int dxbc_whole(const u8* p, size_t n)
+     return n >= 32 && !memcmp(p, "DXBC", 4) && *(const u32*)(p + 24) == (u32)n;
+ }
+ 
++static void shader_cache_write(const char* path, ID3DBlob* b)
++{
++    const u8* p = (const u8*)b->lpVtbl->GetBufferPointer(b);
++    const size_t n = b->lpVtbl->GetBufferSize(b);
++    char tmp[MAX_PATH + 96];
++    snprintf(tmp, sizeof tmp, "%s.%lu.tmp", path, (unsigned long)GetCurrentThreadId());
++    FILE* f = fopen(tmp, "wb");
++    if (!f) return;
++    const int ok = fwrite(p, 1, n, f) == n;
++    fclose(f);
++    if (!ok || !MoveFileExA(tmp, path, MOVEFILE_REPLACE_EXISTING)) DeleteFileA(tmp);
++}
++
++/* Compiles started ahead of the walker (d3d12_vp_prefetch, from the FIFO
++ * read-ahead in cellGcmSys.c), on the system thread pool. shader_compile waits
++ * for a program's job instead of compiling it a second time. Only the RSX
++ * thread starts jobs and takes their results; the lock covers the workers
++ * finishing. D3D12_SHADER_PREFETCH=0 turns the read-ahead off. */
++#define SHADER_JOBS 64
++typedef struct {
++    u64 key;
++    int state;                       /* 0 free, 1 compiling, 2 done */
++    HANDLE done;                     /* manual reset: set when state becomes 2 */
++    char* hlsl; size_t len;
++    char target[8];
++    char path[MAX_PATH + 64];
++    ID3DBlob* blob; HRESULT hr;
++} ShaderJob;
++static ShaderJob s_jobs[SHADER_JOBS];
++static SRWLOCK s_jobs_lock = SRWLOCK_INIT;
++
++static void CALLBACK shader_job_run(PTP_CALLBACK_INSTANCE inst, void* param)
++{
++    (void)inst;
++    ShaderJob* j = (ShaderJob*)param;
++    const uint64_t ft0 = PS3_FT_ON() ? ps3_ft_now() : 0;
++    ID3DBlob* b = NULL; ID3DBlob* e = NULL;
++    const HRESULT hr = D3DCompile(j->hlsl, j->len, "prefetch", NULL, NULL, "main", j->target,
++                                  shader_opt_flags(), 0, &b, &e);
++    if (e) e->lpVtbl->Release(e);
++    if (SUCCEEDED(hr) && b && j->path[0]) shader_cache_write(j->path, b);
++    if (ft0) ps3_ft_span(PS3_FT_COMPILE, 0, j->target[0] == 'v' ? 0u : 1u, 2u, ft0, ps3_ft_now());
++    AcquireSRWLockExclusive(&s_jobs_lock);
++    free(j->hlsl); j->hlsl = NULL;
++    j->blob = b; j->hr = hr; j->state = 2;
++    ReleaseSRWLockExclusive(&s_jobs_lock);
++    SetEvent(j->done);
++}
++
++static void shader_path(char* path, size_t cap, const char* dir, u64 key, const char* target)
++{
++    if (dir) snprintf(path, cap, "%s\\%016llx.%s.dxbc", dir, (unsigned long long)key, target);
++    else path[0] = 0;
++}
++
++/* Start compiling `hlsl` on a worker unless it is on disk or under way. */
++static void shader_prefetch(const char* hlsl, size_t len, const char* target)
++{
++    const char* dir = shader_cache_dir();
++    const u64 key = shader_key(hlsl, len, target, shader_opt_flags());
++    char path[MAX_PATH + 64];
++    shader_path(path, sizeof path, dir, key, target);
++    if (path[0] && GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES) return;
++    ShaderJob* j = NULL;
++    AcquireSRWLockExclusive(&s_jobs_lock);
++    for (int i = 0; i < SHADER_JOBS; i++)
++        if (s_jobs[i].state && s_jobs[i].key == key) { ReleaseSRWLockExclusive(&s_jobs_lock); return; }
++    for (int i = 0; i < SHADER_JOBS && !j; i++)
++        if (!s_jobs[i].state) j = &s_jobs[i];
++    for (int i = 0; i < SHADER_JOBS && !j; i++)                /* done and never asked for: it is on disk */
++        if (s_jobs[i].state == 2) {
++            j = &s_jobs[i];
++            if (j->blob) { j->blob->lpVtbl->Release(j->blob); j->blob = NULL; }
++        }
++    char* copy = j ? (char*)malloc(len + 1) : NULL;
++    if (!copy) { ReleaseSRWLockExclusive(&s_jobs_lock); return; }   /* every slot compiling */
++    memcpy(copy, hlsl, len); copy[len] = 0;
++    j->key = key; j->state = 1; j->hlsl = copy; j->len = len; j->blob = NULL; j->hr = E_PENDING;
++    snprintf(j->target, sizeof j->target, "%s", target);
++    snprintf(j->path, sizeof j->path, "%s", path);
++    if (!j->done) j->done = CreateEventA(NULL, TRUE, FALSE, NULL);
++    else ResetEvent(j->done);
++    ReleaseSRWLockExclusive(&s_jobs_lock);
++    if (!j->done || !TrySubmitThreadpoolCallback(shader_job_run, j, NULL)) {
++        AcquireSRWLockExclusive(&s_jobs_lock);
++        free(j->hlsl); j->hlsl = NULL; j->state = 0;
++        ReleaseSRWLockExclusive(&s_jobs_lock);
++    }
++}
++
+ /* D3DCompile, through the cache. Same contract: *out on success, *err (may be
+  * NULL) with the compiler's messages on failure. kind is 0 for a vertex
+  * program, 1 for a fragment program (PS3_FTRACE). */
+ static HRESULT shader_compile(const char* hlsl, size_t len, const char* name, const char* target,
+                               int kind, ID3DBlob** out, ID3DBlob** err)
+ {
+-    static unsigned hits, misses; static double miss_ms;
++    static unsigned hits, misses, waits; static double miss_ms;
+     static int dbg = -1;
+     if (dbg < 0) dbg = getenv("D3D12_SHADER_CACHE_DBG") ? 1 : 0;
+     const UINT flags = shader_opt_flags();
+     const char* dir = shader_cache_dir();
+     const uint64_t ft0 = PS3_FT_ON() ? ps3_ft_now() : 0;
+     const double t0 = perf_now();
+-    char path[MAX_PATH + 64] = "";
++    const u64 key = shader_key(hlsl, len, target, flags);
++    char path[MAX_PATH + 64];
++    shader_path(path, sizeof path, dir, key, target);
+     *out = NULL;
+     if (err) *err = NULL;
+-    if (dir) {
+-        snprintf(path, sizeof path, "%s\\%016llx.%s.dxbc", dir,
+-                 (unsigned long long)shader_key(hlsl, len, target, flags), target);
++    /* A worker started on it: wait for that job rather than compiling it twice. */
++    { ShaderJob* j = NULL;
++      AcquireSRWLockExclusive(&s_jobs_lock);
++      for (int i = 0; i < SHADER_JOBS && !j; i++)
++          if (s_jobs[i].state && s_jobs[i].key == key) j = &s_jobs[i];
++      ReleaseSRWLockExclusive(&s_jobs_lock);
++      if (j) {
++          WaitForSingleObject(j->done, INFINITE);
++          AcquireSRWLockExclusive(&s_jobs_lock);
++          if (j->key == key && j->state == 2 && SUCCEEDED(j->hr) && j->blob) {
++              *out = j->blob; j->blob = NULL; j->state = 0;
++          }
++          ReleaseSRWLockExclusive(&s_jobs_lock);
++          if (*out) {
++              waits++;
++              if (dbg) printf("[shader] from a worker %s, waited %.1f ms (%u so far)\n", name, (perf_now() - t0) * 1000.0, waits);
++              if (ft0) ps3_ft_span(PS3_FT_COMPILE, 0, (u32)kind, 3u, ft0, ps3_ft_now());
++              return S_OK;
++          }
++      } }   /* a job that failed: compile here, for the messages */
++    if (path[0]) {
+         FILE* f = fopen(path, "rb");
+         if (f) {
+             fseek(f, 0, SEEK_END);
+@@ -2427,22 +2537,54 @@ static HRESULT shader_compile(const char* hlsl, size_t len, const char* name, co
+     misses++; miss_ms += ms;
+     if (dbg) printf("[shader] compiled %s in %.1f ms (%u compiled, %.0f ms in all)\n", name, ms, misses, miss_ms);
+     if (ft0) ps3_ft_span(PS3_FT_COMPILE, 0, (u32)kind, 0u, ft0, ps3_ft_now());
+-    if (SUCCEEDED(hr) && *out && path[0]) {
+-        const u8* p = (const u8*)(*out)->lpVtbl->GetBufferPointer(*out);
+-        const size_t n = (*out)->lpVtbl->GetBufferSize(*out);
+-        char tmp[sizeof path + 16];
+-        snprintf(tmp, sizeof tmp, "%s.%lu.tmp", path, (unsigned long)GetCurrentThreadId());
+-        FILE* f = fopen(tmp, "wb");
+-        if (f) {
+-            const int ok = fwrite(p, 1, n, f) == n;
+-            fclose(f);
+-            if (!ok || !MoveFileExA(tmp, path, MOVEFILE_REPLACE_EXISTING)) DeleteFileA(tmp);
+-        }
+-    }
++    if (SUCCEEDED(hr) && *out && path[0]) shader_cache_write(path, *out);
+     return hr;
+ }
+ 
+ #include "rsx_vp_decompiler.h"
++extern u32 rsx_vp_program_size_instrs(const u8*, u32);
++extern int rsx_vp_decompile(const uint8_t*, u32, char*, u32);
++
++/* VP_START_OFF=1: decompile from instruction 0, not SET_TRANSFORM_PROGRAM_START. */
++static int vp_start_off(void)
++{
++    static int off = -1;
++    if (off < 0) off = getenv("VP_START_OFF") ? 1 : 0;
++    return off;
++}
++
++/* g_rsx_vp_prefetch: a program the FIFO read-ahead found a draw will run.
++ * The same bytes vp_get_vs will decompile -- from the program start to its end
++ * bit -- so the HLSL, and the cache key, come out the same; a new one goes to
++ * a worker. Programs already compiled, or offered lately, are skipped by their
++ * hash before anything is decompiled. */
++static void d3d12_vp_prefetch(const u8* store, u32 bytes, u32 start)
++{
++    static int on = -1;
++    if (on < 0) { const char* e = getenv("D3D12_SHADER_PREFETCH");
++                  on = !(e && e[0] == '0') && !getenv("VP_W_ONE") && !getenv("VP_BYPASS"); }
++    if (!on || bytes < 16) return;
++    u32 vstart = vp_start_off() ? 0 : start * 16u;
++    if (vstart >= bytes) vstart = 0;
++    const u8* vuc = store + vstart;
++    u32 vlen = bytes - vstart;
++    const u32 instrs = rsx_vp_program_size_instrs(vuc, vlen);
++    if (instrs) vlen = instrs * 16u;
++    const u32 hash = vp_hash_ucode(vuc, vlen);
++    for (int i = 0; i < s_d3d.vp_vs_n; i++)
++        if (s_d3d.vp_vs[i].hash == hash) return;
++    static u32 offered[512], n_offered;
++    for (u32 i = 0; i < 512; i++)
++        if (offered[i] == hash) return;
++    offered[n_offered++ % 512] = hash;
++    static char hlsl[262144];
++    if (rsx_vp_decompile(vuc, vlen, hlsl, sizeof hlsl) <= 0) return;
++    { static int dbg = -1;
++      if (dbg < 0) dbg = getenv("D3D12_SHADER_CACHE_DBG") ? 1 : 0;
++      if (dbg) printf("[shader] read-ahead offers vp hash=%08X start=%u (%u instrs)\n", hash, start, instrs); }
++    shader_prefetch(hlsl, strlen(hlsl), "vs_5_0");
++}
++
+ static int vp_get_vs(const rsx_state* st)
+ {
+     extern int rsx_vp_decompile(const uint8_t*, u32, char*, u32);
+@@ -8507,6 +8649,8 @@ static rsx_backend s_d3d12_backend = {0};
+ int rsx_d3d12_backend_init(u32 width, u32 height, const char* title)
+ {
+     memset(&s_d3d, 0, sizeof(s_d3d));
++    { extern void (*g_rsx_vp_prefetch)(const u8*, u32, u32);   /* the FIFO read-ahead, cellGcmSys.c */
++      g_rsx_vp_prefetch = d3d12_vp_prefetch; }
+     s_d3d.width = width;
+     s_d3d.height = height;
+     s_d3d.clear_color[0] = 0.0f;
