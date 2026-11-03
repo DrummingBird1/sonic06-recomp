@@ -291,13 +291,13 @@
                                     <ComboBox Grid.Column="1" ItemsSource="{Binding AspectOptions}" SelectedValuePath="Value"
                                               SelectedValue="{Binding Settings.Aspect}"/>
                                 </Grid>
-                                <CheckBox Style="{StaticResource Toggle}" IsChecked="{Binding Settings.VSync}" Margin="0,10">
+                                <CheckBox Style="{StaticResource Toggle}" IsChecked="{Binding Settings.VSync}" AutomationProperties.Name="{l:T gfx_vsync}" Margin="0,10">
                                     <StackPanel>
                                         <TextBlock Text="{l:T gfx_vsync}"/>
                                         <TextBlock Text="{l:T gfx_vsync_desc}" Style="{StaticResource Sub}"/>
                                     </StackPanel>
                                 </CheckBox>
-                                <CheckBox Style="{StaticResource Toggle}" IsChecked="{Binding Settings.ShaderAsync}" Margin="0,10">
+                                <CheckBox Style="{StaticResource Toggle}" IsChecked="{Binding Settings.ShaderAsync}" AutomationProperties.Name="{l:T gfx_async}" Margin="0,10">
                                     <StackPanel>
                                         <TextBlock Text="{l:T gfx_async}"/>
                                         <TextBlock Text="{l:T gfx_async_desc}" Style="{StaticResource Sub}"/>
@@ -337,7 +337,7 @@
                                     <TextBlock Grid.Column="2" Text="{Binding Settings.Sharpen, StringFormat={}{0}%}" VerticalAlignment="Center"
                                                HorizontalAlignment="Right" FlowDirection="LeftToRight"/>
                                 </Grid>
-                                <CheckBox Style="{StaticResource Toggle}" IsChecked="{Binding Settings.Fxaa}" Margin="0,10">
+                                <CheckBox Style="{StaticResource Toggle}" IsChecked="{Binding Settings.Fxaa}" AutomationProperties.Name="{l:T gfx_aa}" Margin="0,10">
                                     <StackPanel>
                                         <TextBlock Text="{l:T gfx_aa}"/>
                                         <TextBlock Text="{l:T gfx_aa_desc}" Style="{StaticResource Sub}"/>
@@ -401,13 +401,13 @@
                         <Border Style="{StaticResource CardBorder}">
                             <StackPanel>
                                 <TextBlock Text="{l:T settings_controls}" Style="{StaticResource H2}"/>
-                                <CheckBox Style="{StaticResource Toggle}" IsChecked="{Binding Settings.Keyboard}" Margin="0,10">
+                                <CheckBox Style="{StaticResource Toggle}" IsChecked="{Binding Settings.Keyboard}" AutomationProperties.Name="{l:T settings_keyboard}" Margin="0,10">
                                     <StackPanel>
                                         <TextBlock Text="{l:T settings_keyboard}"/>
                                         <TextBlock Text="{l:T settings_keyboard_desc}" Style="{StaticResource Sub}"/>
                                     </StackPanel>
                                 </CheckBox>
-                                <CheckBox Style="{StaticResource Toggle}" IsChecked="{Binding Settings.EscCloses}" Margin="0,10">
+                                <CheckBox Style="{StaticResource Toggle}" IsChecked="{Binding Settings.EscCloses}" AutomationProperties.Name="{l:T settings_esc}" Margin="0,10">
                                     <StackPanel>
                                         <TextBlock Text="{l:T settings_esc}"/>
                                         <TextBlock Text="{l:T settings_esc_desc}" Style="{StaticResource Sub}"/>

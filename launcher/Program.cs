@@ -13,6 +13,7 @@ namespace Sonic06Launcher
         ///   --check out.txt                        the setup status, in English
         ///   --smoke out.txt                        opens the window, closes it, writes "window ok"
         ///   --screenshot &lt;page 0-4&gt; &lt;lang&gt; out.png  the window on a page, in a language
+        ///   --layout out.txt                       text that does not fit, every page and language
         ///   --report out.txt                       a bug report; its path into out.txt
         ///   --play &lt;seconds&gt; out.txt              the game with the saved settings, then its window size
         ///   --setup &lt;iso&gt; &lt;rpcs3.exe&gt; log.txt     "Set up everything" without dialogs (tools installed)
@@ -101,6 +102,13 @@ namespace Sonic06Launcher
                     Loc.I.Set(args[2]);
                     await System.Threading.Tasks.Task.Delay(800);   // the bindings settle
                     w.SaveShot(page, args[3]);
+                    w.Close();
+                };
+            if (args.Length == 2 && args[0] == "--layout")
+                w.ContentRendered += async (o, e) =>
+                {
+                    var found = await w.CheckLayout();
+                    File.WriteAllLines(args[1], found.Count > 0 ? found : new List<string> { "layout ok" });
                     w.Close();
                 };
             app.Run(w);

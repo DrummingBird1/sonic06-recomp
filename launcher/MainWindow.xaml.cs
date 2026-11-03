@@ -294,6 +294,89 @@ namespace Sonic06Launcher
             enc.Frames.Add(BitmapFrame.Create(bmp));
             using (var f = File.Create(file)) enc.Save(f);
         }
+
+        /// <summary>
+        /// Text that does not fit, on every page in every language, at the
+        /// window's default size and at its smallest (Launcher.exe --layout).
+        /// </summary>
+        public async Task<List<string>> CheckLayout()
+        {
+            var found = new List<string>();
+            var pages = new[] { NavPlay, NavSetup, NavGraphics, NavSettings, NavSupport };
+            var start = Loc.I.Code;
+            foreach (var size in new[] { new Size(Width, Height), new Size(MinWidth, MinHeight) })
+            {
+                Width = size.Width;
+                Height = size.Height;
+                foreach (var (code, _) in Loc.Languages)
+                {
+                    Loc.I.Set(code);
+                    for (int p = 0; p < pages.Length; p++)
+                    {
+                        pages[p].IsChecked = true;
+                        await Task.Delay(250);   // the bindings settle
+                        UpdateLayout();
+                        found.AddRange(Clipped().Select(c => $"{size.Width}x{size.Height} {code} page {p}: {c}"));
+                    }
+                }
+            }
+            Loc.I.Set(start);
+            return found;
+        }
+
+        static IEnumerable<DependencyObject> Tree(DependencyObject d)
+        {
+            yield return d;
+            for (int i = 0; i < VisualTreeHelper.GetChildrenCount(d); i++)
+                foreach (var c in Tree(VisualTreeHelper.GetChild(d, i))) yield return c;
+        }
+
+        /// <summary>
+        /// Each visible TextBlock whose text is wider (or, wrapped, taller) than
+        /// its box, or that a parent cuts sideways. Cuts from above and below are
+        /// left out: the pages scroll.
+        /// </summary>
+        IEnumerable<string> Clipped()
+        {
+            foreach (var t in Tree(Root).OfType<TextBlock>())
+            {
+                if (!t.IsVisible || string.IsNullOrWhiteSpace(t.Text) || t.ActualWidth < 1) continue;
+                var ft = new FormattedText(t.Text, System.Globalization.CultureInfo.CurrentCulture, t.FlowDirection,
+                                           new Typeface(t.FontFamily, t.FontStyle, t.FontWeight, t.FontStretch),
+                                           t.FontSize, Brushes.Black, VisualTreeHelper.GetDpi(t).PixelsPerDip);
+                // FormattedText and the TextBlock round apart by a pixel or two.
+                const double slack = 2;
+                var w = t.ActualWidth - t.Padding.Left - t.Padding.Right;
+                var need = ft.WidthIncludingTrailingWhitespace;
+                if (t.TextWrapping == TextWrapping.NoWrap)
+                {
+                    if (need > w + slack) { yield return $"\"{t.Text}\" needs {need:0} px, has {w:0}"; continue; }
+                }
+                else
+                {
+                    ft.MaxTextWidth = Math.Max(1, w + slack);
+                    need = ft.Width;
+                    var h = t.ActualHeight - t.Padding.Top - t.Padding.Bottom;
+                    if (ft.Height > h + slack) { yield return $"\"{t.Text}\" needs {ft.Height:0} px high, has {h:0}"; continue; }
+                }
+                // Where the text itself sits in the box, by its alignment.
+                var tw = Math.Min(need, w);
+                var x = t.TextAlignment == TextAlignment.Right ? t.ActualWidth - t.Padding.Right - tw
+                      : t.TextAlignment == TextAlignment.Center ? (t.ActualWidth - tw) / 2 : t.Padding.Left;
+                for (var a = VisualTreeHelper.GetParent(t); a is FrameworkElement fe && a != Root; a = VisualTreeHelper.GetParent(a))
+                {
+                    var clip = System.Windows.Controls.Primitives.LayoutInformation.GetLayoutClip(fe)?.Bounds;
+                    if (clip == null || clip.Value.IsEmpty) continue;
+                    var box = t.TransformToAncestor(fe).TransformBounds(new Rect(x, 0, tw, t.ActualHeight));
+                    var shown = Math.Max(0, Math.Min(box.Right, clip.Value.Right) - Math.Max(box.Left, clip.Value.Left));
+                    if (shown < box.Width - slack)
+                    {
+                        yield return $"\"{t.Text}\" cut by its {fe.GetType().Name}: {shown:0} of {box.Width:0} px shown";
+                        break;
+                    }
+                }
+            }
+        }
     }
 
     /// <summary>A message in the launcher's style, with buttons in the current language.</summary>
