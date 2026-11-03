@@ -18,7 +18,7 @@ namespace Sonic06Launcher
         public event PropertyChangedEventHandler PropertyChanged;
 
         bool fullscreen, vsync = true, mute, keyboard = true, fxaa, escCloses;
-        string windowSize = "1280x720", language = "", aspect = "keep", scaler = "bilinear";
+        string windowSize = "1280x720", language = "", aspect = "keep", scaler = "bilinear", resScale = "auto";
         int sharpen, aniso, brightness = 100;
 
         // Display and sound. D3D12_FULLSCREEN, D3D12_WINDOW, D3D12_VSYNC=0, PS3_LANG, PS3_MUTE.
@@ -38,8 +38,40 @@ namespace Sonic06Launcher
         public bool Fxaa { get => fxaa; set => Set(ref fxaa, value); }
         public int Aniso { get => aniso; set => Set(ref aniso, value); }                                      // 0 = the game's own
         public int Brightness { get => brightness; set => Set(ref brightness, Math.Max(50, Math.Min(150, value))); } // percent
+        // Internal resolution (patch 0032): D3D12_RES_SCALE, or "auto" to pick one from the window.
+        public string ResScale { get => resScale; set => Set(ref resScale, value); }
 
         public static readonly string[] Sizes = { "1280x720", "1600x900", "1920x1080", "2560x1440", "3840x2160" };
+        public static readonly string[] ResScales = { "1", "1.5", "2", "3" };
+        static readonly System.Globalization.CultureInfo Inv = System.Globalization.CultureInfo.InvariantCulture;
+
+        /// <summary>The size the game draws at for a scale, as "2560 × 1440".</summary>
+        public static string ResSize(string scale)
+        {
+            var k = double.Parse(scale, Inv);
+            return $"{1280 * k:0} × {720 * k:0}";
+        }
+
+        /// <summary>The scale to run with: the chosen one, or for "auto" the smallest that
+        /// covers the picture in the window (or on the screen, in fullscreen).</summary>
+        public string EffectiveResScale()
+        {
+            if (ResScale != "auto") return ResScales.Contains(ResScale) ? ResScale : "1";
+            int w, h;
+            if (Fullscreen)
+            {
+                var b = System.Windows.Forms.Screen.PrimaryScreen.Bounds;   // pixels: the launcher is DPI-aware
+                w = b.Width; h = b.Height;
+            }
+            else
+            {
+                var wh = WindowSize.Split('x');
+                if (wh.Length != 2 || !int.TryParse(wh[0], out w) || !int.TryParse(wh[1], out h)) return "1";
+            }
+            // Keep: the picture is as large as the smaller side allows. Stretch: it fills both.
+            double need = Aspect == "stretch" ? Math.Max(w / 1280.0, h / 720.0) : Math.Min(w / 1280.0, h / 720.0);
+            return ResScales.FirstOrDefault(s => double.Parse(s, Inv) >= need - 0.05) ?? ResScales.Last();
+        }
         // The languages the European disc carries, as PS3_LANG codes; "" is the Windows language.
         public static readonly (string Code, string Key)[] GameLanguages =
         {
@@ -77,6 +109,7 @@ namespace Sonic06Launcher
                 language = c.Str("language"), mute = c.Bool("mute"), keyboard = c.Bool("keyboard", true),
                 escCloses = c.Bool("escCloses"), aspect = c.Str("aspect", "keep"), scaler = c.Str("scaler", "bilinear"),
                 sharpen = Int(c, "sharpen", 0), fxaa = c.Bool("fxaa"), aniso = Int(c, "aniso", 0), brightness = Int(c, "brightness", 100),
+                resScale = c.Str("resScale", "auto"),
             };
             s.cfg = c;
             return s;
@@ -89,6 +122,7 @@ namespace Sonic06Launcher
             cfg.Put("language", language); cfg.Put("mute", mute); cfg.Put("keyboard", keyboard); cfg.Put("escCloses", escCloses);
             cfg.Put("aspect", aspect); cfg.Put("scaler", scaler); cfg.Put("sharpen", sharpen.ToString());
             cfg.Put("fxaa", fxaa); cfg.Put("aniso", aniso.ToString()); cfg.Put("brightness", brightness.ToString());
+            cfg.Put("resScale", resScale);
             cfg.Save();
         }
 
@@ -97,10 +131,10 @@ namespace Sonic06Launcher
         {
             switch (name)
             {
-                case "performance": Scaler = "bilinear"; Sharpen = 0; Fxaa = false; Aniso = 0; break;
-                case "balanced": Scaler = "sharp"; Sharpen = 25; Fxaa = false; Aniso = 4; break;
-                case "quality": Scaler = "bicubic"; Sharpen = 40; Fxaa = true; Aniso = 16; break;
-                default: Scaler = "bilinear"; Sharpen = 0; Fxaa = false; Aniso = 0; Aspect = "keep"; Brightness = 100; VSync = true; break;
+                case "performance": ResScale = "1"; Scaler = "bilinear"; Sharpen = 0; Fxaa = false; Aniso = 0; break;
+                case "balanced": ResScale = "auto"; Scaler = "sharp"; Sharpen = 25; Fxaa = false; Aniso = 4; break;
+                case "quality": ResScale = "auto"; Scaler = "bicubic"; Sharpen = 40; Fxaa = true; Aniso = 16; break;
+                default: ResScale = "auto"; Scaler = "bilinear"; Sharpen = 0; Fxaa = false; Aniso = 0; Aspect = "keep"; Brightness = 100; VSync = true; break;
             }
         }
 
@@ -121,6 +155,8 @@ namespace Sonic06Launcher
             if (Fxaa) e["D3D12_AA"] = "fxaa";
             if (Aniso > 1) e["D3D12_ANISO"] = Aniso.ToString(inv);
             if (Brightness != 100) e["D3D12_BRIGHTNESS"] = (Brightness / 100.0).ToString("0.00", inv);
+            var res = EffectiveResScale();
+            if (res != "1") e["D3D12_RES_SCALE"] = res;
             return e;
         }
     }

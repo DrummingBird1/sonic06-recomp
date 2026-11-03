@@ -305,6 +305,15 @@
                                 <Grid Style="{StaticResource Row}">
                                     <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                                     <StackPanel Margin="0,0,20,0">
+                                        <TextBlock Text="{l:T gfx_res}"/>
+                                        <TextBlock Text="{l:T gfx_res_desc}" Style="{StaticResource Sub}"/>
+                                    </StackPanel>
+                                    <ComboBox Grid.Column="1" ItemsSource="{Binding ResOptions}" SelectedValuePath="Value"
+                                              SelectedValue="{Binding Settings.ResScale}" VerticalAlignment="Center"/>
+                                </Grid>
+                                <Grid Style="{StaticResource Row}">
+                                    <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                                    <StackPanel Margin="0,0,20,0">
                                         <TextBlock Text="{l:T gfx_scaler}"/>
                                         <TextBlock Text="{l:T gfx_scaler_desc}" Style="{StaticResource Sub}"/>
                                     </StackPanel>

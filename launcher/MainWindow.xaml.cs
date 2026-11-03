@@ -35,14 +35,19 @@ namespace Sonic06Launcher
         public ObservableCollection<StatusItem> Status { get; } = new ObservableCollection<StatusItem>();
 
         public Option[] ModeOptions { get; } = { new Option(false, "gfx_mode_window"), new Option(true, "gfx_mode_fullscreen") };
-        // Isolated as left-to-right text, or a right-to-left page shows 1440 × 2560.
-        public Option[] SizeOptions { get; } = GameSettings.Sizes.Select(s => new Option(s, null, "⁦" + s.Replace("x", " × ") + "⁩")).ToArray();
+        // Between left-to-right marks, or a right-to-left page shows 1440 × 2560: an LRM before the
+        // first number makes every number after it left-to-right, and the × between two of them too.
+        // WPF ignores the isolates (LRI, PDI) and the embeddings (LRE, PDF): both still showed 1440 × 2560.
+        public Option[] SizeOptions { get; } = GameSettings.Sizes.Select(s => new Option(s, null, "‎" + s.Replace("x", " × ") + "‎")).ToArray();
         public Option[] AspectOptions { get; } = { new Option("keep", "gfx_aspect_keep"), new Option("stretch", "gfx_aspect_stretch") };
         public Option[] ScalerOptions { get; } =
         {
             new Option("bilinear", "gfx_scaler_bilinear"), new Option("sharp", "gfx_scaler_sharp"),
             new Option("bicubic", "gfx_scaler_bicubic"), new Option("nearest", "gfx_scaler_nearest"),
         };
+        public Option[] ResOptions { get; } = new[] { new Option("auto", "gfx_res_auto") }
+            .Concat(GameSettings.ResScales.Select(s => new Option(s, s == "1" ? "gfx_res_native" : null,
+                    "‎" + s + "× · " + GameSettings.ResSize(s) + "‎"))).ToArray();
         public Option[] AnisoOptions { get; } =
         {
             new Option(0, "gfx_aniso_off"), new Option(2, "gfx_aniso_n", "2"), new Option(4, "gfx_aniso_n", "4"),

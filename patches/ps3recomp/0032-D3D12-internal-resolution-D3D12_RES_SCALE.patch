@@ -1,0 +1,510 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: DrummingBird1 <1979036+DrummingBird1@users.noreply.github.com>
+Date: Tue, 3 Nov 2026 08:29:13 +0200
+Subject: [PATCH] D3D12: internal resolution (D3D12_RES_SCALE)
+
+D3D12_RES_SCALE=1..4 renders every guest surface at that multiple of its
+size: the frame, the offscreen colour and depth surfaces, the shared depth
+buffer and the screen copy. Surfaces keep their guest size in w/h and draw
+records stay in guest pixels; only the D3D12 resources and the pixel
+rectangles given to the rasterizer and to copies are scaled (rs_px,
+rs_set_rect), so both edges of a rectangle scale and neighbours still meet.
+The present pass samples the larger frame, and the setting needs it.
+
+A surface's first upload from guest memory is stretched by nearest texel in
+ordinary memory and written to the upload heap in order: stretching in the
+write-combined heap itself took 6 s for one 2048x2048 surface at x3.
+Those upload buffers are now released at the start of the next frame
+instead of living as long as the surface. Fragment programs that read WPOS
+get it divided back into guest pixels. Frame dumps and captures read the
+scaled size. RT_CREATE_DBG=<n> logs surface creations with their cost.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ libs/video/rsx_d3d12_backend.c | 190 ++++++++++++++++++++++-----------
+ 1 file changed, 128 insertions(+), 62 deletions(-)
+
+diff --git a/libs/video/rsx_d3d12_backend.c b/libs/video/rsx_d3d12_backend.c
+index e78a80e0..1174d002 100644
+--- a/libs/video/rsx_d3d12_backend.c
++++ b/libs/video/rsx_d3d12_backend.c
+@@ -440,6 +440,25 @@ static u64 s_req_verts = 0, s_req_draws = 0, s_drop_draws = 0;
+  * Feeding it the previous frame costs one frame of latency, which for a water
+  * reflection is not visible. */
+ static ID3D12Resource* s_screen_copy = NULL;
++/* D3D12_RES_SCALE=1..4: the internal resolution, as a multiple of the guest's.
++ * Every surface keeps its guest size in its w/h and every draw record stays in
++ * guest pixels; only the D3D12 resources, and the pixel rectangles handed to
++ * the rasterizer and to copies, are multiplied. Needs the present pass, which
++ * draws the larger frame into the window (pp_read_env sets it). */
++static float s_rs = 1.0f;
++
++static u32 rs_px(u32 v) { return s_rs == 1.0f ? v : (u32)((float)v * s_rs + 0.5f); }
++
++/* A rectangle in guest pixels as the viewport and scissor of a scaled surface.
++ * Both edges are scaled, so neighbouring rectangles still meet. */
++static void rs_set_rect(ID3D12GraphicsCommandList* cl, u32 x, u32 y, u32 w, u32 h)
++{
++    const u32 x0 = rs_px(x), y0 = rs_px(y), x1 = rs_px(x + w), y1 = rs_px(y + h);
++    D3D12_VIEWPORT vp = {(float)x0, (float)y0, (float)(x1 - x0), (float)(y1 - y0), 0.0f, 1.0f};
++    D3D12_RECT sc = {(LONG)x0, (LONG)y0, (LONG)x1, (LONG)y1};
++    cl->lpVtbl->RSSetViewports(cl, 1, &vp);
++    cl->lpVtbl->RSSetScissorRects(cl, 1, &sc);
++}
+ /* Sub-viewport render-to-texture. This title renders its reflection/refraction
+  * pre-pass into a REGION of the same surface (vp 0,208 512x512 and 0,208
+  * 1024x512, cmask=F) and then samples a texture of exactly that size. On
+@@ -483,7 +502,7 @@ static void subvp_capture(u32 fi)
+             D3D12_HEAP_PROPERTIES hp = {0}; hp.Type = D3D12_HEAP_TYPE_DEFAULT;
+             D3D12_RESOURCE_DESC td = {0};
+             td.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+-            td.Width = s_subvp[i].w; td.Height = s_subvp[i].h;
++            td.Width = rs_px(s_subvp[i].w); td.Height = rs_px(s_subvp[i].h);
+             td.DepthOrArraySize = 1; td.MipLevels = 1;
+             td.Format = DXGI_FORMAT_R8G8B8A8_UNORM; td.SampleDesc.Count = 1;
+             td.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+@@ -510,11 +529,11 @@ static void subvp_capture(u32 fi)
+         dstl.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX; dstl.SubresourceIndex = 0;
+         srcl.pResource = s_d3d.render_targets[fi];
+         srcl.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX; srcl.SubresourceIndex = 0;
+-        D3D12_BOX box; box.left = s_subvp[i].x; box.top = s_subvp[i].y;
+-        box.front = 0; box.right = s_subvp[i].x + s_subvp[i].w;
+-        box.bottom = s_subvp[i].y + s_subvp[i].h; box.back = 1;
+-        if (box.right > s_d3d.width)  box.right  = s_d3d.width;
+-        if (box.bottom > s_d3d.height) box.bottom = s_d3d.height;
++        D3D12_BOX box; box.left = rs_px(s_subvp[i].x); box.top = rs_px(s_subvp[i].y);
++        box.front = 0; box.right = box.left + rs_px(s_subvp[i].w);
++        box.bottom = box.top + rs_px(s_subvp[i].h); box.back = 1;
++        if (box.right > rs_px(s_d3d.width))  box.right  = rs_px(s_d3d.width);
++        if (box.bottom > rs_px(s_d3d.height)) box.bottom = rs_px(s_d3d.height);
+         s_d3d.cmd_list->lpVtbl->CopyTextureRegion(s_d3d.cmd_list, &dstl, 0, 0, 0, &srcl, &box);
+ 
+         bb[0].Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE;
+@@ -679,6 +698,7 @@ static u32    s_lock_n  = 0;
+  *   D3D12_AA=fxaa                                 FXAA on the guest frame, with smooth scaling
+  *   D3D12_SHARPEN=0..1                            contrast-adaptive, after AMD's CAS
+  *   D3D12_BRIGHTNESS=0.5..1.5                     a gamma curve, so nothing clips
++ *   D3D12_RES_SCALE=1..4                          internal resolution (see s_rs)
+  * -------------------------------------------------------------------------*/
+ static struct {
+     int on, read;
+@@ -712,9 +732,13 @@ static void pp_read_env(void)
+     e = getenv("D3D12_BRIGHTNESS");
+     s_pp.gamma = e ? (float)atof(e) : 1.f;
+     if (!(s_pp.gamma >= 0.5f && s_pp.gamma <= 1.5f)) s_pp.gamma = 1.f;
+-    printf("[D3D12] present pass %s: scaler %.0f aspect %s fxaa %.0f sharpen %.2f brightness %.2f\n",
++    e = getenv("D3D12_RES_SCALE");
++    s_rs = e ? (float)atof(e) : 1.f;
++    if (!(s_rs >= 1.f && s_rs <= 4.f) || !s_pp.on) s_rs = 1.f;
++    printf("[D3D12] present pass %s: scaler %.0f aspect %s fxaa %.0f sharpen %.2f brightness %.2f"
++           " internal resolution x%.2f\n",
+            s_pp.on ? "on" : "off", s_pp.scaler, s_pp.keep_aspect ? "keep" : "stretch",
+-           s_pp.fxaa, s_pp.sharpen, s_pp.gamma);
++           s_pp.fxaa, s_pp.sharpen, s_pp.gamma, s_rs);
+ }
+ 
+ /* D3D12_ESC=ignore: Escape no longer closes the window. A player who presses
+@@ -909,7 +933,8 @@ static int pp_init(void)
+     hr = dev->lpVtbl->CreateGraphicsPipelineState(dev, &pd, &IID_ID3D12PipelineState, (void**)&s_pp.pso);
+     vs->lpVtbl->Release(vs); ps->lpVtbl->Release(ps);
+     if (FAILED(hr)) { printf("[D3D12] present pass PSO failed (0x%08lX)\n", hr); return -1; }
+-    printf("[D3D12] present pass: guest %ux%u -> window %ux%u\n", s_d3d.width, s_d3d.height, s_pp.sc_w, s_pp.sc_h);
++    printf("[D3D12] present pass: guest %ux%u drawn at %ux%u -> window %ux%u\n", s_d3d.width, s_d3d.height,
++           rs_px(s_d3d.width), rs_px(s_d3d.height), s_pp.sc_w, s_pp.sc_h);
+     return 0;
+ }
+ 
+@@ -1162,7 +1187,7 @@ static int init_d3d12(u32 width, u32 height)
+             hp.Type = D3D12_HEAP_TYPE_DEFAULT;
+             D3D12_RESOURCE_DESC rd = {0};
+             rd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+-            rd.Width = width; rd.Height = height; rd.DepthOrArraySize = 1; rd.MipLevels = 1;
++            rd.Width = rs_px(width); rd.Height = rs_px(height); rd.DepthOrArraySize = 1; rd.MipLevels = 1;
+             rd.Format = DXGI_FORMAT_R8G8B8A8_UNORM; rd.SampleDesc.Count = 1;
+             rd.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+             hr = s_d3d.device->lpVtbl->CreateCommittedResource(s_d3d.device, &hp, D3D12_HEAP_FLAG_NONE, &rd,
+@@ -1210,8 +1235,8 @@ static int init_d3d12(u32 width, u32 height)
+          * this DSV is shared by every pass -- with a window-sized depth
+          * buffer, draws into larger offscreen RTs (wave's 1920x1080 input
+          * image) were silently cropped to the window rect. */
+-        depth_desc.Width              = 2048;
+-        depth_desc.Height             = 2048;
++        depth_desc.Width              = rs_px(2048);
++        depth_desc.Height             = rs_px(2048);
+         depth_desc.DepthOrArraySize   = 1;
+         depth_desc.MipLevels          = 1;
+         depth_desc.Format             = DXGI_FORMAT_D24_UNORM_S8_UINT;
+@@ -1826,7 +1851,7 @@ static void dump_backbuffer_bmp(void)
+ {
+     if (!s_d3d.readback_buf) return;
+     void* mapped = NULL;
+-    D3D12_RANGE rr = {0, (SIZE_T)s_d3d.readback_pitch * s_d3d.height};
++    D3D12_RANGE rr = {0, (SIZE_T)s_d3d.readback_pitch * rs_px(s_d3d.height)};
+     if (FAILED(s_d3d.readback_buf->lpVtbl->Map(s_d3d.readback_buf, 0, &rr, &mapped)) || !mapped)
+         return;
+ 
+@@ -1837,7 +1862,7 @@ static void dump_backbuffer_bmp(void)
+              dir ? dir : "", dir ? "/" : "", s_dump_name ? s_dump_name : "frame", idx++);
+     FILE* f = fopen(path, "wb");
+     if (f) {
+-        u32 w = s_d3d.width, h = s_d3d.height;
++        u32 w = rs_px(s_d3d.width), h = rs_px(s_d3d.height);   /* what the GPU drew */
+         u32 padded = (w * 3 + 3) & ~3u;
+         u32 imgsz  = padded * h;
+         u32 filesz = 54 + imgsz;
+@@ -1865,7 +1890,7 @@ static void dump_backbuffer_bmp(void)
+             free(row);
+         }
+         fclose(f);
+-        printf("[D3D12] dumped %s (%ux%u)\n", path, s_d3d.width, s_d3d.height);
++        printf("[D3D12] dumped %s (%ux%u)\n", path, w, h);
+     }
+     D3D12_RANGE wr = {0, 0};
+     s_d3d.readback_buf->lpVtbl->Unmap(s_d3d.readback_buf, 0, &wr);
+@@ -2088,13 +2113,13 @@ static void rsx_capture_frame(u32 fi, u32 ndraws, u32 capidx)
+ 
+     /* Backbuffer (in PRESENT state at capture time) + every used offscreen RT. */
+     snprintf(path, sizeof path, "%s/backbuffer.bmp", dir);
+-    cap_readback_write(s_d3d.render_targets[fi], s_d3d.width, s_d3d.height,
++    cap_readback_write(s_d3d.render_targets[fi], rs_px(s_d3d.width), rs_px(s_d3d.height),
+                        DXGI_FORMAT_R8G8B8A8_UNORM, D3D12_RESOURCE_STATE_PRESENT, fi, path);
+     for (int i = 0; i < MAX_OFF_RTS; i++) {
+         OffRT* r = &s_d3d.off_rt[i];
+         if (!r->res || !r->used) continue;
+         snprintf(path, sizeof path, "%s/rt_%08X.bmp", dir, r->off);
+-        cap_readback_write(r->res, r->w, r->h, r->dxgi, r->st, fi, path);
++        cap_readback_write(r->res, rs_px(r->w), rs_px(r->h), r->dxgi, r->st, fi, path);
+     }
+     printf("[RSXCAP] frame %llu -> %s (%u ops)\n",
+            (unsigned long long)s_d3d.frame_count, dir, ndraws);
+@@ -2672,6 +2697,18 @@ static void hlsl_replace_all(char* buf, size_t cap, const char* find, const char
+     }
+ }
+ 
++/* WPOS under D3D12_RES_SCALE. The program runs on the scaled surface, so
++ * SV_POSITION counts scaled pixels, and a program that addresses a screen-sized
++ * texture by WPOS, or compares it with a guest rectangle, wants guest pixels.
++ * Divided, not floored: the fraction keeps the extra detail. */
++static void fp_wpos_rescale(char* hlsl, size_t cap)
++{
++    char to[96];
++    snprintf(to, sizeof to, "_rsx_wpos(float4(input.position.xy * %.9g, input.position.zw))",
++             1.0 / (double)s_rs);
++    hlsl_replace_all(hlsl, cap, "_rsx_wpos(input.position)", to);
++}
++
+ /* Which of a draw's texture units are cube textures, as a 16-bit mask. */
+ static u32 dr_cube_mask(const D3D12DrawRecord* dr)
+ {
+@@ -2886,6 +2923,7 @@ static ID3D12PipelineState* vp_get_fp_pso(int vs_idx, u32 fp_addr, u32 blend, in
+     if (n > 0 && alpha_key && !alpha_done)
+         rsx_fp_apply_alpha_test(hlsl, sizeof hlsl, alpha_key & 0xFFFFu, (float)(alpha_key >> 16) / 255.0f);
+     if (n <= 0) { static int _e=0; if(PS3_LOG_FIRST(_e, 16)) printf("[FP] decompile fail (fp=0x%08X)\n", fp_addr); return NULL; }
++    if (s_rs != 1.0f) fp_wpos_rescale(hlsl, sizeof hlsl);
+     /* FP_LIST=1: every program the title actually compiles, with its size. A
+      * fragment program that hangs the GPU shows up here as an implausible
+      * instruction count long before it shows up as a TDR. */
+@@ -4245,10 +4283,11 @@ static int off_rt_get(u32 off, u32 w, u32 h, u32 rsx_fmt)
+         }
+     }
+     OffRT* r = &s_d3d.off_rt[slot];
++    const double t_mk = perf_now();
+     D3D12_HEAP_PROPERTIES hp = {0}; hp.Type = D3D12_HEAP_TYPE_DEFAULT;
+     D3D12_RESOURCE_DESC td = {0};
+     td.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+-    td.Width = w; td.Height = h; td.DepthOrArraySize = 1; td.MipLevels = 1;
++    td.Width = rs_px(w); td.Height = rs_px(h); td.DepthOrArraySize = 1; td.MipLevels = 1;
+     td.Format = want_fmt; td.SampleDesc.Count = 1;
+     td.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+     td.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+@@ -4275,13 +4314,14 @@ static int off_rt_get(u32 off, u32 w, u32 h, u32 rsx_fmt)
+         u32 bpp = (want_fmt == DXGI_FORMAT_R16G16B16A16_FLOAT) ? 8u :
+                   (want_fmt == DXGI_FORMAT_R32G32B32A32_FLOAT) ? 16u :
+                   (want_fmt == DXGI_FORMAT_R32_FLOAT) ? 4u : 4u;
+-        u32 pitch = (w * bpp + 255) & ~255u;
++        const u32 sw = rs_px(w), sh = rs_px(h);   /* the resource's size */
++        u32 pitch = (sw * bpp + 255) & ~255u;
+         u32 src = cellGcmResolveOffset(off);
+         if (vm_base && src != 0xFFFFFFFFu) {
+             D3D12_HEAP_PROPERTIES hu = {0}; hu.Type = D3D12_HEAP_TYPE_UPLOAD;
+             D3D12_RESOURCE_DESC bd = {0};
+             bd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+-            bd.Width = (u64)pitch * h; bd.Height = 1; bd.DepthOrArraySize = 1;
++            bd.Width = (u64)pitch * sh; bd.Height = 1; bd.DepthOrArraySize = 1;
+             bd.MipLevels = 1; bd.SampleDesc.Count = 1;
+             bd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+             if (SUCCEEDED(s_d3d.device->lpVtbl->CreateCommittedResource(
+@@ -4291,9 +4331,17 @@ static int off_rt_get(u32 off, u32 w, u32 h, u32 rsx_fmt)
+                 void* mp = NULL; D3D12_RANGE nr = {0,0};
+                 if (SUCCEEDED(r->up->lpVtbl->Map(r->up, 0, &nr, &mp)) && mp) {
+                     const u8* sp = vm_base + src;
+-                    for (u32 y = 0; y < h; y++) {
++                    /* Scaled, the guest-sized rows go to ordinary memory first:
++                     * the upload heap is write-combined, and stretching them in
++                     * place, which reads it back, took 6 s for one 2048x2048
++                     * surface at x3. Then a row map, then one stretched row. */
++                    const int scaled = sw != w || sh != h;
++                    const u32 lpitch = scaled ? w * bpp : pitch;
++                    u8* lo = scaled ? (u8*)malloc((size_t)lpitch * h + (size_t)sw * bpp + (size_t)sw * 4) : NULL;
++                    u8* base = scaled ? lo : (u8*)mp;
++                    for (u32 y = 0; base && y < h; y++) {
+                         const u8* srow = sp + (u64)y * w * bpp;
+-                        u8* drow = (u8*)mp + (u64)y * pitch;
++                        u8* drow = base + (u64)y * lpitch;
+                         if (want_fmt == DXGI_FORMAT_R8G8B8A8_UNORM) {
+                             /* guest A8R8G8B8 (bytes A,R,G,B) -> R,G,B,A */
+                             for (u32 x = 0; x < w; x++) {
+@@ -4317,6 +4365,24 @@ static int off_rt_get(u32 off, u32 w, u32 h, u32 rsx_fmt)
+                             }
+                         }
+                     }
++                    if (lo) {   /* nearest texel, written to the heap in order */
++                        u8* wide = lo + (size_t)lpitch * h;
++                        u32* xm = (u32*)(wide + (size_t)sw * bpp);
++                        for (u32 x = 0; x < sw; x++)
++                            xm[x] = (u32)(((u64)x * 2 + 1) * w / (2 * (u64)sw)) * bpp;
++                        u32 last = 0xFFFFFFFFu;
++                        for (u32 y = 0; y < sh; y++) {
++                            const u32 sy = (u32)(((u64)y * 2 + 1) * h / (2 * (u64)sh));
++                            if (sy != last) {
++                                const u8* srow = lo + (size_t)sy * lpitch;
++                                for (u32 x = 0; x < sw; x++)
++                                    memcpy(wide + (size_t)x * bpp, srow + xm[x], bpp);
++                                last = sy;
++                            }
++                            memcpy((u8*)mp + (size_t)y * pitch, wide, (size_t)sw * bpp);
++                        }
++                        free(lo);
++                    }
+                     r->up->lpVtbl->Unmap(r->up, 0, NULL);
+                     D3D12_TEXTURE_COPY_LOCATION cdst = {0}, csrc = {0};
+                     cdst.pResource = r->res;
+@@ -4324,8 +4390,8 @@ static int off_rt_get(u32 off, u32 w, u32 h, u32 rsx_fmt)
+                     csrc.pResource = r->up;
+                     csrc.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+                     csrc.PlacedFootprint.Footprint.Format   = want_fmt;
+-                    csrc.PlacedFootprint.Footprint.Width    = w;
+-                    csrc.PlacedFootprint.Footprint.Height   = h;
++                    csrc.PlacedFootprint.Footprint.Width    = sw;
++                    csrc.PlacedFootprint.Footprint.Height   = sh;
+                     csrc.PlacedFootprint.Footprint.Depth    = 1;
+                     csrc.PlacedFootprint.Footprint.RowPitch = pitch;
+                     s_d3d.cmd_list->lpVtbl->CopyTextureRegion(s_d3d.cmd_list, &cdst, 0, 0, 0, &csrc, NULL);
+@@ -4343,6 +4409,12 @@ static int off_rt_get(u32 off, u32 w, u32 h, u32 rsx_fmt)
+             r->st = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+         }
+     }
++    /* RT_CREATE_DBG=<n>: the first n surfaces made, with what it cost. */
++    { static int cap = -1, n = 0;
++      if (cap < 0) { const char* e = getenv("RT_CREATE_DBG"); cap = e ? atoi(e) : 0; }
++      if (n < cap) { n++;
++        fprintf(stderr, "[RTMAKE] 0x%08X %ux%u dxgi=%u frame=%llu %.1f ms%c", off, w, h, (u32)want_fmt,
++                (unsigned long long)s_d3d.frame_count, (perf_now() - t_mk) * 1000.0, 10); } }
+ 
+     D3D12_CPU_DESCRIPTOR_HANDLE rh;
+     s_d3d.rt_rtv_heap->lpVtbl->GetCPUDescriptorHandleForHeapStart(s_d3d.rt_rtv_heap, &rh);
+@@ -4487,7 +4559,7 @@ static int off_ds_get(u32 off, u32 w, u32 h)
+     D3D12_HEAP_PROPERTIES hp = {0}; hp.Type = D3D12_HEAP_TYPE_DEFAULT;
+     D3D12_RESOURCE_DESC td = {0};
+     td.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+-    td.Width = w; td.Height = h; td.DepthOrArraySize = 1; td.MipLevels = 1;
++    td.Width = rs_px(w); td.Height = rs_px(h); td.DepthOrArraySize = 1; td.MipLevels = 1;
+     td.Format = DXGI_FORMAT_R24G8_TYPELESS; td.SampleDesc.Count = 1;
+     td.Flags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
+     D3D12_CLEAR_VALUE cv = {0};
+@@ -4600,10 +4672,7 @@ static void ds_convert(int i, int rt)
+     off_rt_transition(rt, D3D12_RESOURCE_STATE_RENDER_TARGET);
+     D3D12_CPU_DESCRIPTOR_HANDLE rh = off_rt_rtv(rt);
+     cl->lpVtbl->OMSetRenderTargets(cl, 1, &rh, FALSE, NULL);
+-    D3D12_VIEWPORT vp = {0, 0, (float)r->w, (float)r->h, 0.0f, 1.0f};
+-    D3D12_RECT sc = {0, 0, (LONG)r->w, (LONG)r->h};
+-    cl->lpVtbl->RSSetViewports(cl, 1, &vp);
+-    cl->lpVtbl->RSSetScissorRects(cl, 1, &sc);
++    rs_set_rect(cl, 0, 0, r->w, r->h);
+     cl->lpVtbl->SetGraphicsRootSignature(cl, s_d3d.dsconv_rs);
+     cl->lpVtbl->SetPipelineState(cl, s_d3d.dsconv_pso);
+     ID3D12DescriptorHeap* hp[] = { s_d3d.srv_heap };
+@@ -4648,7 +4717,7 @@ static void screen_copy_capture(u32 fi)
+                 D3D12_HEAP_PROPERTIES hp = {0}; hp.Type = D3D12_HEAP_TYPE_DEFAULT;
+                 D3D12_RESOURCE_DESC td = {0};
+                 td.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+-                td.Width = s_d3d.width; td.Height = s_d3d.height;
++                td.Width = rs_px(s_d3d.width); td.Height = rs_px(s_d3d.height);
+                 td.DepthOrArraySize = 1; td.MipLevels = 1;
+                 td.Format = DXGI_FORMAT_R8G8B8A8_UNORM; td.SampleDesc.Count = 1;
+                 td.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+@@ -4698,8 +4767,8 @@ static void screen_copy_capture(u32 fi)
+                       cd.pResource = s_d3d.readback_buf;
+                       cd.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+                       cd.PlacedFootprint.Footprint.Format   = DXGI_FORMAT_R8G8B8A8_UNORM;
+-                      cd.PlacedFootprint.Footprint.Width    = s_d3d.width;
+-                      cd.PlacedFootprint.Footprint.Height   = s_d3d.height;
++                      cd.PlacedFootprint.Footprint.Width    = rs_px(s_d3d.width);
++                      cd.PlacedFootprint.Footprint.Height   = rs_px(s_d3d.height);
+                       cd.PlacedFootprint.Footprint.Depth    = 1;
+                       cd.PlacedFootprint.Footprint.RowPitch = s_d3d.readback_pitch;
+                       cs.pResource = s_screen_copy;
+@@ -4800,7 +4869,7 @@ static void composite_present(u32 fi)
+     sl.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX; sl.SubresourceIndex = 0;
+     D3D12_BOX box = {0};
+     box.left = 0; box.top = 0; box.front = 0;
+-    box.right = cw; box.bottom = ch; box.back = 1;
++    box.right = rs_px(cw); box.bottom = rs_px(ch); box.back = 1;
+     s_d3d.cmd_list->lpVtbl->CopyTextureRegion(s_d3d.cmd_list, &dl, 0, 0, 0, &sl, &box);
+ 
+     b[0].Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE;
+@@ -4820,6 +4889,7 @@ static void guest_fb_present(u32 fi)
+         inited = 1;
+         const char* e = getenv("GCM_GUEST_FB");
+         unsigned a = 0, b = 0, c = 0, d = 0;
++        if (e && s_rs != 1.0f) { printf("[D3D12] GCM_GUEST_FB needs D3D12_RES_SCALE=1\n"); return; }
+         if (!e || sscanf(e, "%i,%u,%u,%u", &a, &b, &c, &d) != 4 || !b || !c) return;
+         off = a; gw = b; gh = c; gpitch = d;
+         up_pitch = (gw * 4u + 255u) & ~255u;      /* D3D12 wants 256-byte rows */
+@@ -4940,7 +5010,8 @@ static void present_pass(u32 fi)
+     cl->lpVtbl->SetGraphicsRootSignature(cl, s_pp.root);
+     cl->lpVtbl->SetPipelineState(cl, s_pp.pso);
+     cl->lpVtbl->SetDescriptorHeaps(cl, 1, &s_pp.srv_heap);
+-    const float k[8] = { gw, gh, dw, dh, s_pp.scaler, s_pp.fxaa, s_pp.sharpen, s_pp.gamma };
++    const float k[8] = { (float)rs_px(s_d3d.width), (float)rs_px(s_d3d.height), dw, dh,
++                         s_pp.scaler, s_pp.fxaa, s_pp.sharpen, s_pp.gamma };
+     cl->lpVtbl->SetGraphicsRoot32BitConstants(cl, 0, 8, k, 0);
+     D3D12_GPU_DESCRIPTOR_HANDLE srv;
+     s_pp.srv_heap->lpVtbl->GetGPUDescriptorHandleForHeapStart(s_pp.srv_heap, &srv);
+@@ -4989,12 +5060,12 @@ static void render_frame(void)
+ 
+     /* Lazily create the readback buffer the first time a dump is requested. */
+     if (s_d3d.dump_frames_left > 0 && !s_d3d.readback_buf) {
+-        s_d3d.readback_pitch = (s_d3d.width * 4 + 255) & ~255u;
++        s_d3d.readback_pitch = (rs_px(s_d3d.width) * 4 + 255) & ~255u;
+         D3D12_HEAP_PROPERTIES hp = {0};
+         hp.Type = D3D12_HEAP_TYPE_READBACK;
+         D3D12_RESOURCE_DESC rd = {0};
+         rd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+-        rd.Width = (u64)s_d3d.readback_pitch * s_d3d.height;
++        rd.Width = (u64)s_d3d.readback_pitch * rs_px(s_d3d.height);
+         rd.Height = 1; rd.DepthOrArraySize = 1; rd.MipLevels = 1;
+         rd.SampleDesc.Count = 1;
+         rd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+@@ -5008,6 +5079,11 @@ static void render_frame(void)
+     s_d3d.cmd_allocators[fi]->lpVtbl->Reset(s_d3d.cmd_allocators[fi]);
+     s_d3d.cmd_list->lpVtbl->Reset(s_d3d.cmd_list, s_d3d.cmd_allocators[fi], NULL);
+     s_d3d.tex_ring_used[fi] = 0;   /* this frame index's copies are done */
++    /* So are the surfaces' first uploads (the GPU drained above, and surfaces
++     * are only made after this point). Their buffers held a surface's size in
++     * system memory for as long as it lived: 151 MB for one at x3. */
++    for (int i = 0; i < MAX_OFF_RTS; i++)
++        if (s_d3d.off_rt[i].up) { s_d3d.off_rt[i].up->lpVtbl->Release(s_d3d.off_rt[i].up); s_d3d.off_rt[i].up = NULL; }
+ 
+     /* Upload the bound font atlas into an R8_UNORM texture and create its SRV.
+      * The atlas is a linear 8-bit coverage map, so a straight row copy (no
+@@ -5543,10 +5619,7 @@ static void render_frame(void)
+         1.0f, 0, 0, NULL);
+ 
+     /* Set viewport and scissor */
+-    D3D12_VIEWPORT viewport = {0, 0, (float)s_d3d.width, (float)s_d3d.height, 0.0f, 1.0f};
+-    D3D12_RECT scissor = {0, 0, (LONG)s_d3d.width, (LONG)s_d3d.height};
+-    s_d3d.cmd_list->lpVtbl->RSSetViewports(s_d3d.cmd_list, 1, &viewport);
+-    s_d3d.cmd_list->lpVtbl->RSSetScissorRects(s_d3d.cmd_list, 1, &scissor);
++    rs_set_rect(s_d3d.cmd_list, 0, 0, s_d3d.width, s_d3d.height);
+ 
+     /* Bind pipeline state and push MVP if anything to draw */
+     if (s_d3d.pipeline_ready && s_d3d.draw_count > 0) {
+@@ -5783,12 +5856,10 @@ static void render_frame(void)
+                             vp.Height = (float)s_d3d.off_ds[wantz].h;
+                         }
+                     }
+-                    D3D12_RECT sc = {0, 0, (LONG)vp.Width, (LONG)vp.Height};
+                     vp_last_w = vp.Width; vp_last_h = vp.Height;
+                     s_d3d.cmd_list->lpVtbl->OMSetRenderTargets(s_d3d.cmd_list, dr->no_color ? 0 : nrt,
+                                                                dr->no_color ? NULL : rh, FALSE, &cur_dsv);
+-                    s_d3d.cmd_list->lpVtbl->RSSetViewports(s_d3d.cmd_list, 1, &vp);
+-                    s_d3d.cmd_list->lpVtbl->RSSetScissorRects(s_d3d.cmd_list, 1, &sc);
++                    rs_set_rect(s_d3d.cmd_list, 0, 0, (u32)vp.Width, (u32)vp.Height);
+                     if (wantz >= 0) {
+                         /* A depth surface keeps its contents across passes; the
+                          * guest clears it when it wants it cleared. */
+@@ -5919,13 +5990,10 @@ static void render_frame(void)
+                         dvp.Width    = (float)dr->vp_w;
+                         dvp.Height   = (float)dr->vp_h;
+                     }
+-                    D3D12_RECT dsc = {(LONG)dvp.TopLeftX, (LONG)dvp.TopLeftY,
+-                                      (LONG)(dvp.TopLeftX + dvp.Width),
+-                                      (LONG)(dvp.TopLeftY + dvp.Height)};
+                     dvp_x = dvp.TopLeftX; dvp_y = dvp.TopLeftY;
+                     dvp_w = dvp.Width;    dvp_h = dvp.Height;
+-                    s_d3d.cmd_list->lpVtbl->RSSetViewports(s_d3d.cmd_list, 1, &dvp);
+-                    s_d3d.cmd_list->lpVtbl->RSSetScissorRects(s_d3d.cmd_list, 1, &dsc);
++                    rs_set_rect(s_d3d.cmd_list, (u32)dvp.TopLeftX, (u32)dvp.TopLeftY,
++                                (u32)dvp.Width, (u32)dvp.Height);
+                 }
+                 /* Per-draw textures: bind this draw's t0-t15 SRV window.
+                  * Any sampled offscreen RT transitions to PSR first (never
+@@ -6028,10 +6096,7 @@ static void render_frame(void)
+             /* Leave the backbuffer bound for the dump/present epilogue. */
+             if (cur_rt >= 0) {
+                 s_d3d.cmd_list->lpVtbl->OMSetRenderTargets(s_d3d.cmd_list, 1, &rtv_handle, FALSE, &dsv_handle);
+-                D3D12_VIEWPORT vp = {0, 0, (float)s_d3d.width, (float)s_d3d.height, 0.0f, 1.0f};
+-                D3D12_RECT sc = {0, 0, (LONG)s_d3d.width, (LONG)s_d3d.height};
+-                s_d3d.cmd_list->lpVtbl->RSSetViewports(s_d3d.cmd_list, 1, &vp);
+-                s_d3d.cmd_list->lpVtbl->RSSetScissorRects(s_d3d.cmd_list, 1, &sc);
++                rs_set_rect(s_d3d.cmd_list, 0, 0, s_d3d.width, s_d3d.height);
+             }
+         }
+     }
+@@ -6185,15 +6250,16 @@ static void render_frame(void)
+             OffRT* r = &s_d3d.off_rt[rt];
+             u32 bpp = (r->dxgi == DXGI_FORMAT_R16G16B16A16_FLOAT) ? 8 :
+                       (r->dxgi == DXGI_FORMAT_R32G32B32A32_FLOAT) ? 16 : 4;
+-            u32 pitch = (r->w * bpp + 255) & ~255u;
++            const u32 rw = rs_px(r->w), rh = rs_px(r->h);   /* the resource's size */
++            u32 pitch = (rw * bpp + 255) & ~255u;
+             fprintf(stderr, "[RTT_SAVERT] rt=%d w=%u h=%u bpp=%u pitch=%u dxgi=%d bytes=%llu\n",
+-                    rt, r->w, r->h, bpp, pitch, (int)r->dxgi,
+-                    (unsigned long long)((u64)pitch * r->h));
++                    rt, rw, rh, bpp, pitch, (int)r->dxgi,
++                    (unsigned long long)((u64)pitch * rh));
+             if (!s_rtsave_buf) {
+                 D3D12_HEAP_PROPERTIES hp = {0}; hp.Type = D3D12_HEAP_TYPE_READBACK;
+                 D3D12_RESOURCE_DESC rd = {0};
+                 rd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+-                rd.Width = (u64)pitch * r->h; rd.Height = 1; rd.DepthOrArraySize = 1;
++                rd.Width = (u64)pitch * rh; rd.Height = 1; rd.DepthOrArraySize = 1;
+                 rd.MipLevels = 1; rd.SampleDesc.Count = 1;
+                 rd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+                 s_d3d.device->lpVtbl->CreateCommittedResource(
+@@ -6208,8 +6274,8 @@ static void render_frame(void)
+                 cdst.pResource = s_rtsave_buf;
+                 cdst.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+                 cdst.PlacedFootprint.Footprint.Format   = (DXGI_FORMAT)r->dxgi;
+-                cdst.PlacedFootprint.Footprint.Width    = r->w;
+-                cdst.PlacedFootprint.Footprint.Height   = r->h;
++                cdst.PlacedFootprint.Footprint.Width    = rw;
++                cdst.PlacedFootprint.Footprint.Height   = rh;
+                 cdst.PlacedFootprint.Footprint.Depth    = 1;
+                 cdst.PlacedFootprint.Footprint.RowPitch = pitch;
+                 csrc.pResource = r->res;
+@@ -6217,10 +6283,10 @@ static void render_frame(void)
+                 s_d3d.cmd_list->lpVtbl->CopyTextureRegion(s_d3d.cmd_list, &cdst, 0, 0, 0, &csrc, NULL);
+                 off_rt_transition(rt, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+                 s_rtsave_state = 1;
+-                s_rtsave_w = r->w; s_rtsave_h = r->h;
++                s_rtsave_w = rw; s_rtsave_h = rh;
+                 s_rtsave_pitch = pitch; s_rtsave_dxgi = r->dxgi;
+                 fprintf(stderr, "[RTT_SAVERT] copy queued: rt=%d %ux%u pitch=%u\n",
+-                        rt, r->w, r->h, pitch);
++                        rt, rw, rh, pitch);
+                 _done = 1;
+             }
+         }
+@@ -6268,8 +6334,8 @@ skip_dump_consider: ;
+         dst.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+         dst.PlacedFootprint.Offset = 0;
+         dst.PlacedFootprint.Footprint.Format   = DXGI_FORMAT_R8G8B8A8_UNORM;
+-        dst.PlacedFootprint.Footprint.Width    = s_d3d.width;
+-        dst.PlacedFootprint.Footprint.Height   = s_d3d.height;
++        dst.PlacedFootprint.Footprint.Width    = rs_px(s_d3d.width);
++        dst.PlacedFootprint.Footprint.Height   = rs_px(s_d3d.height);
+         dst.PlacedFootprint.Footprint.Depth    = 1;
+         dst.PlacedFootprint.Footprint.RowPitch = s_d3d.readback_pitch;
+         src.pResource = s_d3d.render_targets[fi];
