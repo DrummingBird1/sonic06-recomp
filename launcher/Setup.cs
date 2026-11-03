@@ -55,12 +55,12 @@ namespace Sonic06Launcher
         }
 
         // FFmpeg 8 (avcodec-62), the major the runtime is built against. BtbN's
-        // LGPL shared build has the DLLs and the headers in one archive.
+        // LGPL shared build has the DLLs and the headers in one archive. The
+        // address is the fallback: ResolveFfmpeg asks GitHub for the current one.
         public const string FfmpegUrl =
             "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n8.1-latest-win64-lgpl-shared-8.1.zip";
+        const string FfmpegReleases = "https://api.github.com/repos/BtbN/FFmpeg-Builds/releases";
         public const string Ps3RecompUrl = "https://github.com/sp00nznet/ps3recomp.git";
-        // The developer machine's shared copy; players get a clone in deps\.
-        const string SharedPs3Recomp = @"<local>/shared\toolchains\ps3recomp";
 
         // xwin fetches Microsoft's CRT and Windows SDK, the only part of Visual
         // Studio clang-cl needs, from Microsoft's servers: 630 MB instead of a
@@ -257,16 +257,69 @@ namespace Sonic06Launcher
 
         // ---- FFmpeg ---------------------------------------------------------
 
+        /// <summary>
+        /// The FFmpeg 8 archive to download, and its SHA-256 when GitHub publishes one.
+        /// BtbN rebuilds "latest" every day and already builds 9.0 too; the 8.1 name
+        /// will go when 8.x stops being built. So ask GitHub for the newest 8.x LGPL
+        /// shared build, in "latest" and then in the dated releases, and fall back to
+        /// the usual address only when GitHub cannot be asked.
+        /// </summary>
+        public async Task<(string url, string sha256)> ResolveFfmpeg()
+        {
+            var pick = new Regex(@"^ffmpeg-n8\.\d+.*-win64-lgpl-shared-8\.\d+\.zip$");
+            try
+            {
+                ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12 | SecurityProtocolType.Tls13;
+                using (var http = new HttpClient())
+                {
+                    http.DefaultRequestHeaders.UserAgent.ParseAdd("sonic06-recomp-launcher");
+                    http.Timeout = TimeSpan.FromSeconds(20);
+                    foreach (var api in new[] { FfmpegReleases + "/tags/latest", FfmpegReleases + "?per_page=30" })
+                    {
+                        var parsed = new System.Web.Script.Serialization.JavaScriptSerializer { MaxJsonLength = int.MaxValue }
+                            .DeserializeObject(await http.GetStringAsync(api));
+                        var releases = parsed as object[] ?? new[] { parsed };
+                        foreach (var rel in releases.OfType<Dictionary<string, object>>())
+                            if (rel.TryGetValue("assets", out var assets) && assets is object[] list)
+                                foreach (var a in list.OfType<Dictionary<string, object>>())
+                                    if (a.TryGetValue("name", out var n) && n is string name && pick.IsMatch(name))
+                                    {
+                                        var digest = a.TryGetValue("digest", out var dg) && dg is string ds && ds.StartsWith("sha256:")
+                                            ? ds.Substring(7) : null;
+                                        return ((string)a["browser_download_url"], digest);
+                                    }
+                    }
+                }
+            }
+            catch (Exception e)
+            {
+                log("Could not ask GitHub which FFmpeg build is current (" + e.Message + "); using the usual address.");
+            }
+            return (FfmpegUrl, null);
+        }
+
         public async Task DownloadFfmpeg()
         {
             Directory.CreateDirectory(Workspace.Deps);
             var zip = Path.Combine(Workspace.Deps, "ffmpeg.zip");
-            log("Downloading FFmpeg 8 (LGPL, shared): " + FfmpegUrl);
-            await Download(FfmpegUrl, zip);
+            var (url, sha256) = await ResolveFfmpeg();
+            log("Downloading FFmpeg 8 (LGPL, shared): " + url);
+            await Download(url, zip);
+            if (sha256 != null)
+            {
+                string hash;
+                using (var sha = System.Security.Cryptography.SHA256.Create())
+                using (var f = File.OpenRead(zip))
+                    hash = string.Concat(sha.ComputeHash(f).Select(b => b.ToString("x2")));
+                if (hash != sha256) throw new InvalidOperationException("The FFmpeg download does not match the hash GitHub gives for it.");
+                log("FFmpeg's SHA-256 matches GitHub's.");
+            }
             var tmp = Path.Combine(Workspace.Deps, "ffmpeg-unpack");
             if (Directory.Exists(tmp)) Directory.Delete(tmp, true);
             await Task.Run(() => ZipFile.ExtractToDirectory(zip, tmp));
             var inner = Directory.GetDirectories(tmp).Single();   // the archive holds one top folder
+            if (!File.Exists(Path.Combine(inner, "bin", "avcodec-62.dll")))
+                throw new InvalidOperationException("The FFmpeg download has no bin\\avcodec-62.dll: it is not FFmpeg 8.");
             var dst = Path.Combine(Workspace.Deps, "ffmpeg");
             if (Directory.Exists(dst)) Directory.Delete(dst, true);
             Directory.Move(inner, dst);
@@ -306,11 +359,12 @@ namespace Sonic06Launcher
 
         // ---- the build ------------------------------------------------------
 
-        /// <summary>The ps3recomp checkout setup_ps3recomp.ps1 copies from: a configured one, the shared one, or a clone in deps\.</summary>
+        /// <summary>The ps3recomp checkout setup_ps3recomp.ps1 copies from: one set as "ps3recomp" in
+        /// launcher.local.json (a developer's own clone), or a clone in deps\.</summary>
         async Task<string> Ps3RecompSource()
         {
-            foreach (var s in new[] { cfg.Str("ps3recomp"), SharedPs3Recomp })
-                if (s.Length > 0 && Directory.Exists(Path.Combine(s, ".git"))) return s;
+            var s = cfg.Str("ps3recomp");
+            if (s.Length > 0 && Directory.Exists(Path.Combine(s, ".git"))) return s;
             var clone = Path.Combine(Workspace.Deps, "ps3recomp");
             if (!Directory.Exists(Path.Combine(clone, ".git")))
             {

@@ -31,7 +31,7 @@ if ($Ps3Recomp) { $cfg.ps3recomp = $Ps3Recomp }
 if ($FFmpeg -or $FFmpegInclude -or $Ps3Recomp) { $cfg | ConvertTo-Json | Set-Content $cfgPath }
 
 function Find-FFmpeg {
-  $dirs = @($cfg.ffmpeg) + ($env:PATH -split ';') + @('<FFmpeg folder>')
+  $dirs = @($cfg.ffmpeg, (Join-Path $root 'deps\ffmpeg\bin')) + ($env:PATH -split ';') + @('<FFmpeg folder>')
   foreach ($d in $dirs) {
     if ($d -and (Test-Path $d) -and (Get-ChildItem $d -Filter 'avcodec-*.dll' -ErrorAction SilentlyContinue)) { return $d }
   }

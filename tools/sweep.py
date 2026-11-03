@@ -21,8 +21,22 @@ from stagelist import load, path, presses
 sys.path.insert(0, 'tools')
 import audio_gaps
 
-FFMPEG = r'<FFmpeg folder>'
 ROOT = pathlib.Path(__file__).resolve().parent.parent
+
+
+def find_ffmpeg():
+    """The FFmpeg 8 DLLs: the launcher's setting, its download, or FFmpeg's."""
+    dirs = []
+    try:
+        import json
+        dirs.append(json.loads((ROOT / 'launcher.local.json').read_text(encoding='utf-8')).get('ffmpeg', ''))
+    except (OSError, ValueError):
+        pass
+    dirs += [str(ROOT / 'deps' / 'ffmpeg' / 'bin'), r'<FFmpeg folder>']
+    return next((d for d in dirs if d and list(pathlib.Path(d).glob('avcodec-*.dll'))), '')
+
+
+FFMPEG = find_ffmpeg()
 LOAD_SECONDS = 14
 STILLS = 12
 

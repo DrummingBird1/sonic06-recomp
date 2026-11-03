@@ -9,7 +9,7 @@ scratch/
 # The emulated HDD the runtime keeps the title's save data on.
 gamedata/
 
-# --- <local> shared ignore block (init-project.ps1) ---
+# --- shared ignore block (init-project.ps1) ---
 node_modules/
 .pnpm-store/
 .venv/
@@ -75,6 +75,8 @@ src/zz_*
 
 # launcher settings of this machine
 launcher.local.json
+# this machine's paths for agents (AGENTS.md is the shared part)
+AGENTS.local.md
 
 # The launcher's build output, and the tools it downloads (FFmpeg, ps3recomp).
 launcher/bin/

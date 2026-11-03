@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Windows;
@@ -36,6 +37,17 @@ namespace Sonic06Launcher
                 var c = Config.Load();
                 var s = new Setup(c, _ => { }, (_, __) => { });
                 File.WriteAllText(args[1], Support.CreateReport(s, GameSettings.Load(c), new[] { "(report made with --report)" }));
+                return 0;
+            }
+            if (args.Length == 2 && args[0] == "--resolve-ffmpeg")
+            {
+                // Which FFmpeg build Setup would download, and the hash it would check, without downloading it.
+                var lines = new List<string>();
+                var s = new Setup(Config.Load(), lines.Add, (_, __) => { });
+                var (url, sha256) = s.ResolveFfmpeg().GetAwaiter().GetResult();
+                lines.Add("url " + url);
+                lines.Add("sha256 " + (sha256 ?? "(none: not checked)"));
+                File.WriteAllLines(args[1], lines);
                 return 0;
             }
             if (args.Length == 3 && args[0] == "--install-winsysroot" && args[1] == "--accept-microsoft-license")
