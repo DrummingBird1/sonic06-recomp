@@ -1,0 +1,34 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: DrummingBird1 <1979036+DrummingBird1@users.noreply.github.com>
+Date: Tue, 3 Nov 2026 15:18:26 +0200
+Subject: [PATCH] GCM: GCM_PREFETCH_DBG also times the FIFO read-ahead
+
+Every 300 scans, the average time a scan took. In Sonic the Hedgehog's
+story scene it is 0.008 ms a call over 57000 calls in 100 s, about
+0.15 ms a frame; with a warm shader cache the read-ahead on and off ran
+at the same rate (30.00/29.98 against 29.99/29.91 flips/s) and drain
+time (median 11.1-11.3 against 11.4-11.5 ms).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ libs/video/cellGcmSys.c | 7 ++++++-
+ 1 file changed, 6 insertions(+), 1 deletion(-)
+
+diff --git a/libs/video/cellGcmSys.c b/libs/video/cellGcmSys.c
+index 8038e2c2..6535d969 100644
+--- a/libs/video/cellGcmSys.c
++++ b/libs/video/cellGcmSys.c
+@@ -2321,7 +2321,12 @@ static void gcm_rsx_process_fifo_unlocked(void)
+           fflush(stderr);
+       } }
+ 
+-    gcm_vp_prefetch_scan(&s_state, put);
++    { static int dbg = -1; static double total_ms; static unsigned n;
++      if (dbg < 0) dbg = getenv("GCM_PREFETCH_DBG") ? 1 : 0;
++      const uint64_t t0 = dbg ? ps3_ft_now() : 0;
++      gcm_vp_prefetch_scan(&s_state, put);
++      if (dbg) { total_ms += (ps3_ft_now() - t0) / 1e6; if (++n % 300 == 0)
++          fprintf(stderr, "[prefetch] %u scans, %.3f ms each on average%c", n, total_ms / n, 10); } }
+     int budget = 0x100000;                    /* words per tick cap */
+     /* GCM_DRAINDBG also reports WHY each pass stopped. A drain that ends far
+      * short of `put` every tick is the signature of a FIFO that can never
