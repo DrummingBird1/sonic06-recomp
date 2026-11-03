@@ -1,0 +1,202 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: DrummingBird1 <1979036+DrummingBird1@users.noreply.github.com>
+Date: Tue, 3 Nov 2026 16:12:37 +0200
+Subject: [PATCH] D3D12: D3D12_SHADER_ASYNC skips a draw while its shader
+ compiles
+
+With D3D12_SHADER_ASYNC=1 a draw whose vertex or fragment program is
+still compiling on a worker is not waited for: vp_get_vs records it with
+vs_idx -2, vp_get_fp_pso returns no pipeline and flags it not ready, and
+render_frame skips the draw rather than drawing it with the fallback
+pipeline. It is drawn from the first frame its shaders are ready. A
+pending program is remembered by its hash (vertex) or HLSL inputs
+(fragment), so the draws after it do not decompile it again; a program
+with no job yet gets one (shader_ready). Off by default: it changes what
+is drawn. D3D12_SHADER_CACHE_DBG=1 lists each skipped draw, and frame
+dumps now name the frame number.
+
+Story scene, first run: the cut's stall goes from 163-166 ms to none (the
+longest drain 52 ms, no frame over 4 vblanks), at 29.91 flips/s as
+before. 41 frames skipped draws. The largest cluster, 657 draws in one
+frame and 53 in each of the next, falls on the black after NOW LOADING;
+at the cut, 73 then 18 draws a frame for 3-5 frames, and no object is
+visibly missing in those frames. With a warm cache nothing is skipped
+(30.00).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ libs/video/rsx_d3d12_backend.c | 106 ++++++++++++++++++++++++++++++++-
+ 1 file changed, 105 insertions(+), 1 deletion(-)
+
+diff --git a/libs/video/rsx_d3d12_backend.c b/libs/video/rsx_d3d12_backend.c
+index 89503bb5..a39b3442 100644
+--- a/libs/video/rsx_d3d12_backend.c
++++ b/libs/video/rsx_d3d12_backend.c
+@@ -1891,7 +1891,7 @@ static void dump_backbuffer_bmp(void)
+             free(row);
+         }
+         fclose(f);
+-        printf("[D3D12] dumped %s (%ux%u)\n", path, w, h);
++        printf("[D3D12] dumped %s (%ux%u, frame %llu)\n", path, w, h, (unsigned long long)s_d3d.frame_count);
+     }
+     D3D12_RANGE wr = {0, 0};
+     s_d3d.readback_buf->lpVtbl->Unmap(s_d3d.readback_buf, 0, &wr);
+@@ -2472,6 +2472,54 @@ static void shader_prefetch(const char* hlsl, size_t len, const char* target)
+     }
+ }
+ 
++/* D3D12_SHADER_ASYNC=1: a draw whose shader is still compiling on a worker is
++ * skipped instead of waited for, and drawn from the first frame its shader is
++ * ready. On a first visit the frame goes on and a few objects come in late,
++ * instead of the frame stopping until the slowest program compiles (165 ms at
++ * the story scene's cut). Off by default: it changes what is drawn. */
++static int shader_async(void)
++{
++    static int v = -1;
++    if (v < 0) { const char* e = getenv("D3D12_SHADER_ASYNC"); v = (e && e[0] == '1') ? 1 : 0; }
++    return v;
++}
++
++static unsigned s_async_skipped;   /* draws skipped while their shader compiled */
++
++/* Whether a worker is still compiling the shader with this key. */
++static int shader_job_compiling(u64 key)
++{
++    int busy = 0;
++    AcquireSRWLockExclusive(&s_jobs_lock);
++    for (int i = 0; i < SHADER_JOBS; i++)
++        if (s_jobs[i].state == 1 && s_jobs[i].key == key) { busy = 1; break; }
++    ReleaseSRWLockExclusive(&s_jobs_lock);
++    return busy;
++}
++
++/* For D3D12_SHADER_ASYNC: 1 when shader_compile can return `hlsl` without
++ * compiling it (on disk, or a worker has finished it), 0 while a worker is on
++ * it -- one is started if none is. *key gets the cache key. A job that cannot
++ * be started says 1, and the caller compiles in the frame as before. */
++static int shader_ready(const char* hlsl, size_t len, const char* target, u64* key)
++{
++    const char* dir = shader_cache_dir();
++    *key = shader_key(hlsl, len, target, shader_opt_flags());
++    char path[MAX_PATH + 64];
++    shader_path(path, sizeof path, dir, *key, target);
++    if (path[0] && GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES) return 1;
++    for (int pass = 0; pass < 2; pass++) {
++        int state = 0;
++        AcquireSRWLockExclusive(&s_jobs_lock);
++        for (int i = 0; i < SHADER_JOBS; i++)
++            if (s_jobs[i].state && s_jobs[i].key == *key) { state = s_jobs[i].state; break; }
++        ReleaseSRWLockExclusive(&s_jobs_lock);
++        if (state) return state == 2;
++        if (pass == 0) shader_prefetch(hlsl, len, target);
++    }
++    return 1;
++}
++
+ /* D3DCompile, through the cache. Same contract: *out on success, *err (may be
+  * NULL) with the compiler's messages on failure. kind is 0 for a vertex
+  * program, 1 for a fragment program (PS3_FTRACE). */
+@@ -2625,6 +2673,17 @@ static int vp_get_vs(const rsx_state* st)
+             known[ki].idx = i;
+             return i;
+         }
++    /* D3D12_SHADER_ASYNC: a program a worker is still on is not waited for; the
++     * draw is recorded with vs_idx -2 and skipped. Remembered by its hash, so
++     * the draws after it do not decompile it again to find that out. */
++    static struct { u32 hash; u64 key; } pend[32];
++    if (shader_async())
++        for (int i = 0; i < 32; i++)
++            if (pend[i].hash == hash) {
++                if (shader_job_compiling(pend[i].key)) return -2;
++                pend[i].hash = 0;
++                break;
++            }
+ 
+     static char hlsl[262144];
+     int ni = rsx_vp_decompile(vuc, vlen, hlsl, sizeof hlsl);
+@@ -2685,6 +2744,14 @@ static int vp_get_vs(const rsx_state* st)
+         }
+     }
+     ID3DBlob* vb = NULL; ID3DBlob* e = NULL;
++    if (shader_async()) {
++        u64 key;
++        if (!shader_ready(hlsl, strlen(hlsl), "vs_5_0", &key)) {
++            static u32 next;
++            pend[next % 32].hash = hash; pend[next % 32].key = key; next++;
++            return -2;
++        }
++    }
+     HRESULT hr = shader_compile(hlsl, strlen(hlsl), "guest_vp2", "vs_5_0", 0, &vb, &e);
+     if (e) e->lpVtbl->Release(e);
+     if (FAILED(hr) || !vb) {
+@@ -3102,12 +3169,18 @@ static int fp_build_hlsl(u32 off, u32 fp_addr, u32 ctrl, u32 cube_mask,
+     return n;
+ }
+ 
++/* Set when vp_get_fp_pso returned NULL for a shader still compiling
++ * (D3D12_SHADER_ASYNC): the draw is skipped, not drawn with the fallback. */
++static int s_fp_not_ready;
++
+ static ID3D12PipelineState* vp_get_fp_pso(int vs_idx, u32 fp_addr, u32 blend, int nrt,
+                                           DXGI_FORMAT rtfmt, u32 ctrl, u32 cmask, u32 cull,
+                                           u32 cube_mask, u64 zs,
+                                           const rsx_fp_shadow_desc* shadow, u32 shadow_key,
+                                           u32 alpha_key)
+ {
++    s_fp_not_ready = 0;
++    if (vs_idx == -2) { s_fp_not_ready = 1; return NULL; }   /* its vertex program is still compiling */
+     if (nrt < 0) nrt = 0; if (nrt > 4) nrt = 4;   /* 0: a depth-only pass */
+     if (rtfmt == 0) rtfmt = DXGI_FORMAT_R8G8B8A8_UNORM;
+     extern uint8_t* vm_base;
+@@ -3166,6 +3239,18 @@ static ID3D12PipelineState* vp_get_fp_pso(int vs_idx, u32 fp_addr, u32 blend, in
+             s_d3d.vp_fp[i].shadow_key == shadow_key && s_d3d.vp_fp[i].alpha_key == alpha_key)
+             return s_d3d.vp_fp[i].pso;
+     s_perf_pso_miss++;      /* falls through to a full decompile + D3DCompile */
++    /* D3D12_SHADER_ASYNC: a program a worker is still on, by its HLSL inputs. */
++    static struct { u32 idt; u64 key; } fpend[32];
++    u32 idt = 2166136261u;
++    { const u32 parts[5] = { uhash, ctrl, cube_mask, shadow_key, alpha_key };
++      for (int i = 0; i < 5; i++) { idt ^= parts[i]; idt *= 16777619u; } idt |= 1u; }
++    if (shader_async())
++        for (int i = 0; i < 32; i++)
++            if (fpend[i].idt == idt) {
++                if (shader_job_compiling(fpend[i].key)) { s_fp_not_ready = 1; return NULL; }
++                fpend[i].idt = 0;
++                break;
++            }
+     /* PSOMISSDBG=1: on a miss, name the key field that differs from an existing
+      * entry for the same program. "the cache misses" is not actionable; "it
+      * misses on ucode_hash" is. */
+@@ -3214,6 +3299,15 @@ static ID3D12PipelineState* vp_get_fp_pso(int vs_idx, u32 fp_addr, u32 blend, in
+     static char hlsl[RSX_FP_HLSL_BUFFER_SIZE];
+     int n = fp_build_hlsl(off, fp_addr, ctrl, cube_mask, shadow, shadow_key, alpha_key, hlsl, sizeof hlsl);
+     if (n <= 0) { static int _e=0; if(PS3_LOG_FIRST(_e, 16)) printf("[FP] decompile fail (fp=0x%08X)\n", fp_addr); return NULL; }
++    if (shader_async()) {
++        u64 key;
++        if (!shader_ready(hlsl, strlen(hlsl), "ps_5_0", &key)) {
++            static u32 next;
++            fpend[next % 32].idt = idt; fpend[next % 32].key = key; next++;
++            s_fp_not_ready = 1;
++            return NULL;
++        }
++    }
+     /* FP_LIST=1: every program the title actually compiles, with its size. A
+      * fragment program that hangs the GPU shows up here as an implausible
+      * instruction count long before it shows up as a TDR. */
+@@ -6294,6 +6388,16 @@ static void render_frame(void)
+                                                 dr->fp_ctrl, dr->cmask, dr->cull,
+                                                 dr_cube_mask(dr), dr->zs_key,
+                                                 shadow, shadow_key, dr_alpha_key(dr)) : NULL;
++                /* D3D12_SHADER_ASYNC: its shaders are still compiling. Skip it this
++                 * frame rather than draw it with the fallback pipeline. */
++                if (dr->vs_idx == -2 || (!dpso && dr->fp_addr && s_fp_not_ready)) {
++                    s_async_skipped++;
++                    { static int dbg = -1; static unsigned n;
++                      if (dbg < 0) dbg = getenv("D3D12_SHADER_CACHE_DBG") ? 1 : 0;
++                      if (dbg && n++ < 2000) printf("[shader] skipped draw %d of frame %llu (%s not ready)\n", (int)d,
++                                                    (unsigned long long)s_d3d.frame_count, dr->vs_idx == -2 ? "vertex" : "fragment"); }
++                    continue;
++                }
+                 s_d3d.cmd_list->lpVtbl->SetPipelineState(s_d3d.cmd_list,
+                                                          dpso ? dpso : vpso);
+                 s_d3d.cmd_list->lpVtbl->OMSetStencilRef(s_d3d.cmd_list, dr->stencil_ref & 0xFFu);

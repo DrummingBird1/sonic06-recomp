@@ -67,6 +67,8 @@
   "gfx_aspect_stretch": "Strecken",
   "gfx_vsync": "VSync",
   "gfx_vsync_desc": "Auf den Bildschirm warten, damit das Bild nicht reißt.",
+  "gfx_async": "Shader im Hintergrund kompilieren",
+  "gfx_async_desc": "Keine Pause, wenn eine Szene zum ersten Mal erscheint. Dafür können manche Objekte ein paar Bilder zu spät auftauchen.",
   "gfx_quality": "Bildqualität",
   "gfx_res": "Interne Auflösung",
   "gfx_res_desc": "Die Größe, in der das Spiel sein Bild zeichnet. Höher ist schärfer und fordert die Grafikkarte stärker. Automatisch passt sich deinem Fenster an.",

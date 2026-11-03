@@ -1,0 +1,31 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: DrummingBird1 <1979036+DrummingBird1@users.noreply.github.com>
+Date: Tue, 3 Nov 2026 16:16:11 +0200
+Subject: [PATCH] D3D12: say at startup where the shader cache is and whether
+ draws wait
+
+One line in the run log, "[D3D12] shader cache: <dir>; a draw whose
+shader is compiling is waited for | skipped (D3D12_SHADER_ASYNC)", so a
+log shows which mode a run used. The launcher sets the switch, and its
+run log does not record the environment.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ libs/video/rsx_d3d12_backend.c | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/libs/video/rsx_d3d12_backend.c b/libs/video/rsx_d3d12_backend.c
+index a39b3442..463024cf 100644
+--- a/libs/video/rsx_d3d12_backend.c
++++ b/libs/video/rsx_d3d12_backend.c
+@@ -2351,7 +2351,9 @@ static const char* shader_cache_dir(void)
+             printf("[D3D12] shader cache %s unavailable, compiling every time\n", dir);
+             dir[0] = 0;
+         }
+-        if (dir[0]) printf("[D3D12] shader cache: %s\n", dir);
++        { const char* a = getenv("D3D12_SHADER_ASYNC");
++          printf("[D3D12] shader cache: %s; a draw whose shader is compiling is %s\n", dir[0] ? dir : "off",
++                 (a && a[0] == '1') ? "skipped (D3D12_SHADER_ASYNC)" : "waited for"); }
+     }
+     return dir[0] ? dir : NULL;
+ }

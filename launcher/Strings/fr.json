@@ -67,6 +67,8 @@
   "gfx_aspect_stretch": "Étirer pour remplir",
   "gfx_vsync": "VSync",
   "gfx_vsync_desc": "Attendre l'écran, pour que l'image ne se déchire pas.",
+  "gfx_async": "Compiler les shaders en arrière-plan",
+  "gfx_async_desc": "Pas de pause la première fois qu'une scène apparaît. En contrepartie, certains objets peuvent apparaître quelques images en retard.",
   "gfx_quality": "Qualité d'image",
   "gfx_res": "Résolution interne",
   "gfx_res_desc": "La taille à laquelle le jeu dessine l'image. Plus elle est élevée, plus l'image est nette et plus la carte graphique travaille. Automatique s'adapte à votre fenêtre.",

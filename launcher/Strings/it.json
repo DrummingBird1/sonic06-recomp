@@ -67,6 +67,8 @@
   "gfx_aspect_stretch": "Allunga per riempire",
   "gfx_vsync": "VSync",
   "gfx_vsync_desc": "Aspetta lo schermo, così l'immagine non si strappa.",
+  "gfx_async": "Compila gli shader in background",
+  "gfx_async_desc": "Nessuna pausa la prima volta che appare una scena. In cambio, alcuni oggetti possono comparire con qualche fotogramma di ritardo.",
   "gfx_quality": "Qualità dell'immagine",
   "gfx_res": "Risoluzione interna",
   "gfx_res_desc": "La dimensione a cui il gioco disegna l'immagine. Più alta è più nitida e chiede di più alla scheda video. Automatica si adatta alla tua finestra.",

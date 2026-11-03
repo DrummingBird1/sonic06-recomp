@@ -71,6 +71,8 @@
   "gfx_aspect_stretch": "Stretch to fill",
   "gfx_vsync": "VSync",
   "gfx_vsync_desc": "Wait for the display, so the picture does not tear.",
+  "gfx_async": "Compile shaders in the background",
+  "gfx_async_desc": "No pause the first time a scene appears. Some objects can show up a few frames late instead.",
   "gfx_quality": "Image quality",
   "gfx_res": "Internal resolution",
   "gfx_res_desc": "The size the game draws its picture at. Higher is sharper and asks more of the graphics card. Automatic matches your window.",

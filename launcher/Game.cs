@@ -17,7 +17,7 @@ namespace Sonic06Launcher
         Config cfg;
         public event PropertyChangedEventHandler PropertyChanged;
 
-        bool fullscreen, vsync = true, mute, keyboard = true, fxaa, escCloses;
+        bool fullscreen, vsync = true, mute, keyboard = true, fxaa, escCloses, shaderAsync;
         string windowSize = "1280x720", language = "", aspect = "keep", scaler = "bilinear", resScale = "auto";
         int sharpen, aniso, brightness = 100;
 
@@ -40,6 +40,9 @@ namespace Sonic06Launcher
         public int Brightness { get => brightness; set => Set(ref brightness, Math.Max(50, Math.Min(150, value))); } // percent
         // Internal resolution (patch 0032): D3D12_RES_SCALE, or "auto" to pick one from the window.
         public string ResScale { get => resScale; set => Set(ref resScale, value); }
+        // Shaders compile in the background (patch 0038): D3D12_SHADER_ASYNC. Off by default, because
+        // a draw is skipped until its shader is ready.
+        public bool ShaderAsync { get => shaderAsync; set => Set(ref shaderAsync, value); }
 
         public static readonly string[] Sizes = { "1280x720", "1600x900", "1920x1080", "2560x1440", "3840x2160" };
         public static readonly string[] ResScales = { "1", "1.5", "2", "3" };
@@ -109,7 +112,7 @@ namespace Sonic06Launcher
                 language = c.Str("language"), mute = c.Bool("mute"), keyboard = c.Bool("keyboard", true),
                 escCloses = c.Bool("escCloses"), aspect = c.Str("aspect", "keep"), scaler = c.Str("scaler", "bilinear"),
                 sharpen = Int(c, "sharpen", 0), fxaa = c.Bool("fxaa"), aniso = Int(c, "aniso", 0), brightness = Int(c, "brightness", 100),
-                resScale = c.Str("resScale", "auto"),
+                resScale = c.Str("resScale", "auto"), shaderAsync = c.Bool("shaderAsync"),
             };
             s.cfg = c;
             return s;
@@ -122,7 +125,7 @@ namespace Sonic06Launcher
             cfg.Put("language", language); cfg.Put("mute", mute); cfg.Put("keyboard", keyboard); cfg.Put("escCloses", escCloses);
             cfg.Put("aspect", aspect); cfg.Put("scaler", scaler); cfg.Put("sharpen", sharpen.ToString());
             cfg.Put("fxaa", fxaa); cfg.Put("aniso", aniso.ToString()); cfg.Put("brightness", brightness.ToString());
-            cfg.Put("resScale", resScale);
+            cfg.Put("resScale", resScale); cfg.Put("shaderAsync", shaderAsync);
             cfg.Save();
         }
 
@@ -134,7 +137,7 @@ namespace Sonic06Launcher
                 case "performance": ResScale = "1"; Scaler = "bilinear"; Sharpen = 0; Fxaa = false; Aniso = 0; break;
                 case "balanced": ResScale = "auto"; Scaler = "sharp"; Sharpen = 25; Fxaa = false; Aniso = 4; break;
                 case "quality": ResScale = "auto"; Scaler = "bicubic"; Sharpen = 40; Fxaa = true; Aniso = 16; break;
-                default: ResScale = "auto"; Scaler = "bilinear"; Sharpen = 0; Fxaa = false; Aniso = 0; Aspect = "keep"; Brightness = 100; VSync = true; break;
+                default: ResScale = "auto"; Scaler = "bilinear"; Sharpen = 0; Fxaa = false; Aniso = 0; Aspect = "keep"; Brightness = 100; VSync = true; ShaderAsync = false; break;
             }
         }
 
@@ -157,6 +160,7 @@ namespace Sonic06Launcher
             if (Brightness != 100) e["D3D12_BRIGHTNESS"] = (Brightness / 100.0).ToString("0.00", inv);
             var res = EffectiveResScale();
             if (res != "1") e["D3D12_RES_SCALE"] = res;
+            if (ShaderAsync) e["D3D12_SHADER_ASYNC"] = "1";
             return e;
         }
     }
