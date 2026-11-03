@@ -1,0 +1,73 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: DrummingBird1 <1979036+DrummingBird1@users.noreply.github.com>
+Date: Tue, 3 Nov 2026 20:39:00 +0200
+Subject: [PATCH] D3D12_IQ: each message kind once, then counts
+
+The drain printed the first 80 messages and then nothing. One warning
+that comes every frame (ClearRenderTargetView without a clear value)
+filled all 80 within two seconds, so nothing after it was ever seen.
+Now each message ID is printed the first time it comes, and every 1800
+frames a line counts all of them.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ libs/video/rsx_d3d12_backend.c | 29 ++++++++++++++++++++++-------
+ 1 file changed, 22 insertions(+), 7 deletions(-)
+
+diff --git a/libs/video/rsx_d3d12_backend.c b/libs/video/rsx_d3d12_backend.c
+index 463024cf..ee0bf175 100644
+--- a/libs/video/rsx_d3d12_backend.c
++++ b/libs/video/rsx_d3d12_backend.c
+@@ -6804,30 +6804,45 @@ skip_dump_consider: ;
+      * pixels in flOw's render injection while ClearRenderTargetView worked, and
+      * every input (verts, offsets, layout, MVP, PSO, root sig, depth, cull) was
+      * verified correct -- so the only remaining explanation is a validation
+-     * error the debug layer is swallowing. Off unless the env var is set. */
++     * error the debug layer is swallowing. Off unless the env var is set.
++     * Each kind of message (its ID) is printed the first time it comes, and
++     * every 1800 frames a line counts them all: one warning repeated every
++     * frame must not hide the rest. */
+     { static int _iq = -1;
+       if (_iq < 0) { const char* e = getenv("D3D12_IQ"); _iq = e ? 1 : 0; }
+       if (_iq && s_d3d.device) {
++        static struct { int id, sev; unsigned n; } seen[64];
++        static int nseen, changed;
+         ID3D12InfoQueue* iq = NULL;
+         if (SUCCEEDED(s_d3d.device->lpVtbl->QueryInterface(
+                 s_d3d.device, &IID_ID3D12InfoQueue, (void**)&iq)) && iq) {
+             UINT64 n = iq->lpVtbl->GetNumStoredMessages(iq);
+-            static int _printed = 0;
+-            for (UINT64 mi = 0; mi < n && _printed < 80; mi++) {
++            for (UINT64 mi = 0; mi < n; mi++) {
+                 SIZE_T len = 0;
+                 iq->lpVtbl->GetMessage(iq, mi, NULL, &len);
+                 D3D12_MESSAGE* m = (D3D12_MESSAGE*)malloc(len);
+                 if (m && SUCCEEDED(iq->lpVtbl->GetMessage(iq, mi, m, &len))) {
+-                    fprintf(stderr, "[D3D12-IQ][sev=%d id=%d] %s\n",
+-                            (int)m->Severity, (int)m->ID, m->pDescription);
+-                    _printed++;
++                    int k = 0;
++                    while (k < nseen && seen[k].id != (int)m->ID) k++;
++                    if (k == nseen && nseen < 64) {
++                        seen[nseen].id = (int)m->ID; seen[nseen].sev = (int)m->Severity; seen[nseen].n = 0; nseen++;
++                        fprintf(stderr, "[D3D12-IQ][sev=%d id=%d] %s\n",
++                                (int)m->Severity, (int)m->ID, m->pDescription);
++                    }
++                    if (k < nseen) { seen[k].n++; changed = 1; }
+                 }
+                 free(m);
+             }
+             if (n) iq->lpVtbl->ClearStoredMessages(iq);
+             iq->lpVtbl->Release(iq);
+-            fflush(stderr);
+         }
++        if (changed && s_d3d.frame_count && s_d3d.frame_count % 1800 == 0) {
++            fprintf(stderr, "[D3D12-IQ] by frame %llu:", (unsigned long long)s_d3d.frame_count);
++            for (int k = 0; k < nseen; k++) fprintf(stderr, " id=%d(sev %d) x%u", seen[k].id, seen[k].sev, seen[k].n);
++            fprintf(stderr, "\n");
++            changed = 0;
++        }
++        fflush(stderr);
+       } }
+ 
+     if (s_sc_dump_pending) {
