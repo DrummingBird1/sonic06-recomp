@@ -26,10 +26,23 @@ namespace Sonic06Launcher
             var before = Runner.Capture(git, "rev-parse HEAD");
             var rc = await Runner.Run(git, "pull --ff-only", log);
             if (rc != 0) throw new InvalidOperationException($"git pull failed (exit code {rc}).");
-            if (Runner.Capture(git, "rev-parse HEAD") == before) { log("Already up to date."); return; }
+            var after = Runner.Capture(git, "rev-parse HEAD");
+            if (after == before) { log("Already up to date."); return; }
+            // Documents, the launcher and the README do not change the game, so no rebuild.
+            var changed = Runner.Capture(git, $"diff --name-only {before} {after}")
+                .Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+            if (changed.Length > 0 && !changed.Any(AffectsBuild))
+            {
+                log("Updated. Nothing that changes the game came in, so it is not rebuilt.");
+                return;
+            }
             // New patches or a new lifter change the translated code, so all of it is redone.
             await setup.Build(resetToolkit: true);
         }
+
+        static bool AffectsBuild(string path) =>
+            path.StartsWith("patches/") || path.StartsWith("src/") || path.StartsWith("tools/") ||
+            path == "CMakeLists.txt";
 
         /// <summary>
         /// A zip on the desktop: this PC's specs, the setup status, the launcher's
