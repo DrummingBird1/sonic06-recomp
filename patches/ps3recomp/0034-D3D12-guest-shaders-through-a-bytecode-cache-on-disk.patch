@@ -1,0 +1,210 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: DrummingBird1 <1979036+DrummingBird1@users.noreply.github.com>
+Date: Tue, 3 Nov 2026 14:11:53 +0200
+Subject: [PATCH] D3D12: guest shaders through a bytecode cache on disk
+
+D3DCompile is where a new guest program costs its frame. FXC spends half
+a second on a skinned vertex program of 90 instructions, and a scene cut
+that brings a few in stopped Sonic the Hedgehog's story scene for 516 ms
+(97% of the stall's samples in D3DCOMPILER_47 under vp_get_vs). Optimisation
+levels and reshaping the generated HLSL (register arrays as variables, a
+plain multiply) took at most a third off.
+
+shader_compile() keeps what it compiles: <hash of HLSL, target, flags>.dxbc
+in D3D12_SHADER_CACHE (default: shadercache next to the exe; 0 = off),
+written to a temporary name and renamed, and read back only as a whole DXBC
+container. Vertex and fragment programs go through it; repeats inside a run
+(the same fragment program for another pipeline) are reads too. FXC now
+skips its optimiser for guest programs (D3D12_SHADER_OPT=skip, the default;
+1 is FXC's own): the slowest program compiles 2.5x faster, and the driver
+optimises the bytecode again when it builds the pipeline. PS3_FTRACE gets
+a span per shader (kind 17), D3D12_SHADER_CACHE_DBG=1 logs each.
+
+Story scene, 45 s: first run 29.81 flips/s with one 17-vblank stall (was 36
+with FXC's optimiser); second run 30.00, every one of 1349 frames 2 vblanks.
+Wave Ocean at 3840x2160 ran at 60 with either optimisation setting (RTX 4070
+SUPER); a weaker card has not been measured.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ include/ps3emu/ps3_ftrace.h    |   2 +
+ libs/video/rsx_d3d12_backend.c | 139 ++++++++++++++++++++++++++++++++-
+ 2 files changed, 137 insertions(+), 4 deletions(-)
+
+diff --git a/include/ps3emu/ps3_ftrace.h b/include/ps3emu/ps3_ftrace.h
+index 9235a87c..6bbe93eb 100644
+--- a/include/ps3emu/ps3_ftrace.h
++++ b/include/ps3emu/ps3_ftrace.h
+@@ -61,6 +61,8 @@ enum ps3_ft_kind {
+     PS3_FT_HLE         = 15, /* who = PPU tid, a = NID, b = guest lr: an HLE import call */
+     PS3_FT_RECYCLE     = 16, /* the title's buffer-full callback waiting for the walker to reach the
+                               * ring's end, a = ms it slept, b = the tail's bytes still unread at the start */
++    PS3_FT_COMPILE     = 17, /* a guest shader made ready: a = 0 vertex / 1 fragment, b = 1 read from the
++                              * cache on disk / 0 compiled */
+ };
+ 
+ #if defined(_MSC_VER)
+diff --git a/libs/video/rsx_d3d12_backend.c b/libs/video/rsx_d3d12_backend.c
+index d35c69f4..6624e71b 100644
+--- a/libs/video/rsx_d3d12_backend.c
++++ b/libs/video/rsx_d3d12_backend.c
+@@ -2309,6 +2309,139 @@ static int fp_consts_inline(void)
+     return v;
+ }
+ 
++/* ---------------------------------------------------------------------------
++ * Guest shaders through a bytecode cache on disk
++ *
++ * D3DCompile is where a new guest program costs its frame: FXC spends half a
++ * second on a skinned vertex program of 90 instructions, and a scene cut that
++ * brings a few in stopped Sonic the Hedgehog's story scene for 516 ms.
++ * Reshaping the generated HLSL took at most a third off. So a program compiled
++ * once is kept: on a later run it is a file read. The first time, FXC skips
++ * its optimiser: that compiles the slowest program 2.5x faster and halved the
++ * scene cut's stall, and the driver optimises the bytecode again when it
++ * builds the pipeline. Wave Ocean at 3840x2160 ran at 60 either way on an
++ * RTX 4070 SUPER; a weaker card has not been measured.
++ *
++ *   D3D12_SHADER_CACHE=<dir>   where (default: shadercache next to the exe); 0 = off
++ *   D3D12_SHADER_OPT=skip|0|1|3 D3DCompile's optimisation (default skip; 1 is FXC's own)
++ *   D3D12_SHADER_CACHE_DBG=1   every compile and every hit, with its time
++ *
++ * The key is a 64-bit FNV-1a of the HLSL, the target and the flags, so a change
++ * to the decompiler, the edits after it or the switches is a different file.
++ * Files are written to a temporary name and renamed, so a run killed halfway
++ * leaves no truncated bytecode; one that reads back without a whole DXBC
++ * container is compiled again.
++ * -------------------------------------------------------------------------*/
++static const char* shader_cache_dir(void)
++{
++    static int init = 0;
++    static char dir[MAX_PATH];
++    if (!init) {
++        init = 1;
++        const char* e = getenv("D3D12_SHADER_CACHE");
++        if (e && e[0] == '0' && !e[1]) dir[0] = 0;
++        else if (e && *e) snprintf(dir, sizeof dir, "%s", e);
++        else {
++            char exe[MAX_PATH];
++            DWORD n = GetModuleFileNameA(NULL, exe, sizeof exe);
++            char* slash = (n && n < sizeof exe) ? strrchr(exe, '\\') : NULL;
++            if (slash) { *slash = 0; snprintf(dir, sizeof dir, "%s\\shadercache", exe); }
++        }
++        if (dir[0] && !CreateDirectoryA(dir, NULL) && GetLastError() != ERROR_ALREADY_EXISTS) {
++            printf("[D3D12] shader cache %s unavailable, compiling every time\n", dir);
++            dir[0] = 0;
++        }
++        if (dir[0]) printf("[D3D12] shader cache: %s\n", dir);
++    }
++    return dir[0] ? dir : NULL;
++}
++
++static UINT shader_opt_flags(void)
++{
++    static int v = -1;
++    if (v < 0) {
++        const char* e = getenv("D3D12_SHADER_OPT");
++        v = (!e || !strcmp(e, "skip")) ? 4 : (e[0] >= '0' && e[0] <= '3') ? e[0] - '0' : 4;
++    }
++    return v == 4 ? D3DCOMPILE_SKIP_OPTIMIZATION : v == 0 ? D3DCOMPILE_OPTIMIZATION_LEVEL0 :
++           v == 2 ? D3DCOMPILE_OPTIMIZATION_LEVEL2 : v == 3 ? D3DCOMPILE_OPTIMIZATION_LEVEL3 : 0;
++}
++
++static u64 shader_key(const char* hlsl, size_t len, const char* target, UINT flags)
++{
++    u64 h = 0xCBF29CE484222325ull;
++    for (size_t i = 0; i < len; i++) { h ^= (u8)hlsl[i]; h *= 0x100000001B3ull; }
++    for (const char* t = target; *t; t++) { h ^= (u8)*t; h *= 0x100000001B3ull; }
++    h ^= flags; h *= 0x100000001B3ull;
++    return h;
++}
++
++/* A DXBC container: "DXBC", a 16-byte checksum, version 1, then its own size. */
++static int dxbc_whole(const u8* p, size_t n)
++{
++    return n >= 32 && !memcmp(p, "DXBC", 4) && *(const u32*)(p + 24) == (u32)n;
++}
++
++/* D3DCompile, through the cache. Same contract: *out on success, *err (may be
++ * NULL) with the compiler's messages on failure. kind is 0 for a vertex
++ * program, 1 for a fragment program (PS3_FTRACE). */
++static HRESULT shader_compile(const char* hlsl, size_t len, const char* name, const char* target,
++                              int kind, ID3DBlob** out, ID3DBlob** err)
++{
++    static unsigned hits, misses; static double miss_ms;
++    static int dbg = -1;
++    if (dbg < 0) dbg = getenv("D3D12_SHADER_CACHE_DBG") ? 1 : 0;
++    const UINT flags = shader_opt_flags();
++    const char* dir = shader_cache_dir();
++    const uint64_t ft0 = PS3_FT_ON() ? ps3_ft_now() : 0;
++    const double t0 = perf_now();
++    char path[MAX_PATH + 64] = "";
++    *out = NULL;
++    if (err) *err = NULL;
++    if (dir) {
++        snprintf(path, sizeof path, "%s\\%016llx.%s.dxbc", dir,
++                 (unsigned long long)shader_key(hlsl, len, target, flags), target);
++        FILE* f = fopen(path, "rb");
++        if (f) {
++            fseek(f, 0, SEEK_END);
++            const long n = ftell(f);
++            fseek(f, 0, SEEK_SET);
++            ID3DBlob* b = NULL;
++            if (n > 0 && n < (64 << 20) && SUCCEEDED(D3DCreateBlob((SIZE_T)n, &b)) && b) {
++                u8* p = (u8*)b->lpVtbl->GetBufferPointer(b);
++                if (fread(p, 1, (size_t)n, f) == (size_t)n && dxbc_whole(p, (size_t)n)) {
++                    fclose(f);
++                    *out = b;
++                    hits++;
++                    if (dbg) printf("[shader] hit  %s %.2f ms (%u hits, %u compiled)\n", path, (perf_now() - t0) * 1000.0, hits, misses);
++                    if (ft0) ps3_ft_span(PS3_FT_COMPILE, 0, (u32)kind, 1u, ft0, ps3_ft_now());
++                    return S_OK;
++                }
++                b->lpVtbl->Release(b);
++            }
++            fclose(f);
++        }
++    }
++    HRESULT hr = D3DCompile(hlsl, len, name, NULL, NULL, "main", target, flags, 0, out, err);
++    const double ms = (perf_now() - t0) * 1000.0;
++    misses++; miss_ms += ms;
++    if (dbg) printf("[shader] compiled %s in %.1f ms (%u compiled, %.0f ms in all)\n", name, ms, misses, miss_ms);
++    if (ft0) ps3_ft_span(PS3_FT_COMPILE, 0, (u32)kind, 0u, ft0, ps3_ft_now());
++    if (SUCCEEDED(hr) && *out && path[0]) {
++        const u8* p = (const u8*)(*out)->lpVtbl->GetBufferPointer(*out);
++        const size_t n = (*out)->lpVtbl->GetBufferSize(*out);
++        char tmp[sizeof path + 16];
++        snprintf(tmp, sizeof tmp, "%s.%lu.tmp", path, (unsigned long)GetCurrentThreadId());
++        FILE* f = fopen(tmp, "wb");
++        if (f) {
++            const int ok = fwrite(p, 1, n, f) == n;
++            fclose(f);
++            if (!ok || !MoveFileExA(tmp, path, MOVEFILE_REPLACE_EXISTING)) DeleteFileA(tmp);
++        }
++    }
++    return hr;
++}
++
+ #include "rsx_vp_decompiler.h"
+ static int vp_get_vs(const rsx_state* st)
+ {
+@@ -2410,8 +2543,7 @@ static int vp_get_vs(const rsx_state* st)
+         }
+     }
+     ID3DBlob* vb = NULL; ID3DBlob* e = NULL;
+-    HRESULT hr = D3DCompile(hlsl, strlen(hlsl), "guest_vp2", NULL, NULL,
+-                            "main", "vs_5_0", 0, 0, &vb, &e);
++    HRESULT hr = shader_compile(hlsl, strlen(hlsl), "guest_vp2", "vs_5_0", 0, &vb, &e);
+     if (e) e->lpVtbl->Release(e);
+     if (FAILED(hr) || !vb) {
+         static int _e=0; if (PS3_LOG_FIRST(_e, 4)) printf("[VP] per-draw VS compile FAIL (hash=0x%08X)\n", hash);
+@@ -3100,8 +3232,7 @@ static ID3D12PipelineState* vp_get_fp_pso(int vs_idx, u32 fp_addr, u32 blend, in
+         if (rp) memcpy(rp, "return float4(1,0,1,1)", 23);
+     }
+     ID3DBlob* pb = NULL; ID3DBlob* e = NULL;
+-    HRESULT hr = D3DCompile(hlsl, strlen(hlsl), "guest_fp", NULL, NULL,
+-                            "main", "ps_5_0", 0, 0, &pb, &e);
++    HRESULT hr = shader_compile(hlsl, strlen(hlsl), "guest_fp", "ps_5_0", 1, &pb, &e);
+     if (FAILED(hr) || !pb) {
+         static int _e2=0; if (PS3_LOG_FIRST(_e2, 16))
+             printf("[FP] PS compile FAIL (fp=0x%08X): %s\n", fp_addr,
