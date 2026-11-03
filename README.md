@@ -11,6 +11,7 @@ Work in progress, not ready for general use.
 - Runs from the title screen through menus, movies, the town and the stages.
 - Every boss and stage entry starts without a crash, in tests of about a minute each.
 - No stage has been played to the end by a person yet.
+- The first time a scene appears there can be a short pause while its shaders compile; after that they are read from `build/shadercache`.
 - Tested on one Windows PC only.
 
 ## What you need
