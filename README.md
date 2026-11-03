@@ -34,7 +34,7 @@ Run `Launcher.exe` (or `Sonic06.cmd` in a checkout), open **Setup** and press **
 
 Then press **Play**. The other pages:
 
-- **Graphics:** window or borderless fullscreen, window size, aspect ratio (keep 16:9 or stretch), VSync, the upscaling filter (smooth, sharp pixels, bicubic, nearest), sharpening, FXAA, texture filtering and brightness, with performance, balanced and quality presets. The game draws at 1280×720; these choose how that picture reaches your screen.
+- **Graphics:** window or borderless fullscreen, window size, aspect ratio (keep 16:9 or stretch), VSync, the internal resolution, the upscaling filter (smooth, sharp pixels, bicubic, nearest), sharpening, FXAA, texture filtering and brightness, with performance, balanced and quality presets. The internal resolution is the size the game draws at: 1280×720 as on the PS3, up to 3840×2160, or automatic, which matches your window. On the RTX 4070 SUPER it was tested on, 3840×2160 ran as fast as 1280×720; a weaker graphics card has not been tried.
 - **Settings:** the launcher's language and the game's, sound, the keyboard as a controller, and whether Esc closes the game (off by default, so pausing never quits).
 - **Support:** update and rebuild, a bug report, the logs.
 
