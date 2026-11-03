@@ -1,0 +1,230 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: DrummingBird1 <1979036+DrummingBird1@users.noreply.github.com>
+Date: Tue, 3 Nov 2026 15:30:00 +0200
+Subject: [PATCH] D3D12: start fragment program compiles as draws are recorded
+
+render_frame builds the pipelines only after the walk, so a fragment
+program new to a frame was compiled there, in the frame. fp_prefetch now
+hands a recorded draw's program to a worker the first time its HLSL
+inputs (address, control, cube and shadow units, alpha test) are seen;
+vp_get_fp_pso then waits for that job or reads the cache. The HLSL build
+moves out of vp_get_fp_pso into fp_build_hlsl, which both call, so the
+text and the cache key are the same: a warm run still read all 110
+shaders from disk, and the 75 files compiled on workers are identical,
+byte for byte, to the ones compiled in the frame.
+
+Story scene, first run: 74 shaders from workers and none compiled in the
+frame (was 41). The cut's stall stays 163-166 ms: it is the slowest
+vertex program, whose compile can only start when the frame arrives.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ libs/video/rsx_d3d12_backend.c | 159 ++++++++++++++++++++++-----------
+ 1 file changed, 105 insertions(+), 54 deletions(-)
+
+diff --git a/libs/video/rsx_d3d12_backend.c b/libs/video/rsx_d3d12_backend.c
+index f8ae1203..89503bb5 100644
+--- a/libs/video/rsx_d3d12_backend.c
++++ b/libs/video/rsx_d3d12_backend.c
+@@ -3034,6 +3034,74 @@ static u32 dr_fp_units(const D3D12DrawRecord* dr)
+     return rsx_fp_texture_units(vm_base + off, 4096);
+ }
+ 
++/* The HLSL of the fragment program at `off` as a draw runs it: the decompile
++ * and the edits every program gets (constants in b1, the alpha test, WPOS under
++ * D3D12_RES_SCALE). vp_get_fp_pso compiles it; fp_prefetch hands it to a worker
++ * as a draw is recorded, so the two must build the same text. Returns the
++ * decompiler's instruction count, <= 0 on failure. */
++static int fp_build_hlsl(u32 off, u32 fp_addr, u32 ctrl, u32 cube_mask,
++                         const rsx_fp_shadow_desc* shadow, u32 shadow_key, u32 alpha_key,
++                         char* hlsl, u32 cap)
++{
++    extern uint8_t* vm_base;
++    /* The third parameter is the SET_SHADER_CONTROL word; its 0x40 bit picks
++     * the export registers (r0/r2/r3/r4 for 32-bit, h0/h4/h6/h8 for 16-bit).
++     * Each draw records that bit (fp_ctrl, also part of the pipeline key), so
++     * pass it rather than letting the decompiler guess from "was r0 written".
++     * The guess fails on a program that uses r0 as a temp and exports through
++     * h0: God of War HD's 2x-AA resolve computes (B-A)/2 in r0 and the average
++     * in h0, and with r0 exported every 3D frame came out black. The depth
++     * export bits come with it: the same resolve writes the scene depth it
++     * reads from the AA depth surface into the resolved one, and without them
++     * it wrote the quad's own depth there, so every depth-tested pass after it
++     * (shadows, fog, rain, glows) was rejected.
++     * RSX_FP_CTRL_AUTO=1 restores the guess. */
++    static int ctrl_auto = -1;
++    if (ctrl_auto < 0) ctrl_auto = getenv("RSX_FP_CTRL_AUTO") ? 1 : 0;
++    u32 fp_ctrl = ctrl_auto ? RSX_FP_CTRL_AUTO : ctrl;
++    /* The pipeline key leaves the constants out, so the shader must not bake
++     * them: it reads them from b1, refilled for every draw from the draw's own
++     * ucode. Baked, every material sharing a program took the colours of the
++     * first draw compiled: Sonic's fur has the diffuse 0.09,0.16,0.51 in his
++     * model, and he drew with the near-white of whatever came first. */
++    u32 fp_nk = 0;
++    int n = -1, alpha_done = 0;
++    if (!fp_consts_inline()) {
++        n = shadow_key
++            ? rsx_fp_decompile_buffered_shadow_ex(vm_base + off, 4096, fp_ctrl, cube_mask, shadow,
++                                                  hlsl, cap, &fp_nk)
++            : rsx_fp_decompile_buffered_ex(vm_base + off, 4096, fp_ctrl, cube_mask,
++                                           hlsl, cap, &fp_nk);
++        if (n > 0 && fp_nk > VP_FPK_SLOTS) {
++            static int _w = 0;
++            if (PS3_LOG_FIRST(_w, 8))
++                fprintf(stderr, "[FP] fp=0x%X has %u constants, %u fit: baking them%c",
++                        fp_addr, fp_nk, VP_FPK_SLOTS, 10);
++            n = -1;
++        }
++        if (n > 0) {   /* the slot starts with what vp_record_cb puts in front */
++            char from[128], to[192];
++            snprintf(from, sizeof from, "cbuffer PSConstants : register(b1) {\n"
++                     "    float4 fp_constants[%u];\n    float4 fp_alpha;\n};\n", fp_nk ? fp_nk : 1u);
++            snprintf(to, sizeof to, "cbuffer PSConstants : register(b1) {\n"
++                     "    float4 rsx_b1_head[4];\n    float4 rsx_alphatest;\n"
++                     "    float4 fp_constants[%u];\n};\n"
++                     "#define fp_alpha float4(rsx_alphatest.y, 0.0, 0.0, 0.0)\n", VP_FPK_SLOTS);
++            hlsl_replace_all(hlsl, cap, from, to);
++            if (alpha_key) alpha_done = rsx_fp_apply_alpha_test_buffered(hlsl, cap, alpha_key & 0xFFFFu);
++        }
++    }
++    if (n <= 0)
++        n = shadow_key ? rsx_fp_decompile_shadow_ex(vm_base + off, 4096, fp_ctrl, cube_mask, shadow,
++                                                    hlsl, cap)
++                       : rsx_fp_decompile_ex(vm_base + off, 4096, fp_ctrl, cube_mask, hlsl, cap);
++    if (n > 0 && alpha_key && !alpha_done)
++        rsx_fp_apply_alpha_test(hlsl, cap, alpha_key & 0xFFFFu, (float)(alpha_key >> 16) / 255.0f);
++    if (n <= 0) return n;
++    if (s_rs != 1.0f) fp_wpos_rescale(hlsl, cap);
++    return n;
++}
++
+ static ID3D12PipelineState* vp_get_fp_pso(int vs_idx, u32 fp_addr, u32 blend, int nrt,
+                                           DXGI_FORMAT rtfmt, u32 ctrl, u32 cmask, u32 cull,
+                                           u32 cube_mask, u64 zs,
+@@ -3144,61 +3212,8 @@ static ID3D12PipelineState* vp_get_fp_pso(int vs_idx, u32 fp_addr, u32 blend, in
+             fprintf(stderr, "[CUBEKEY] fp=0x%X cube_mask=0x%X (distinct pairs=%d)%c",
+                     fp_addr, cube_mask, ns, 10); } } }
+     static char hlsl[RSX_FP_HLSL_BUFFER_SIZE];
+-    /* The third parameter is the SET_SHADER_CONTROL word; its 0x40 bit picks
+-     * the export registers (r0/r2/r3/r4 for 32-bit, h0/h4/h6/h8 for 16-bit).
+-     * Each draw records that bit (fp_ctrl, also part of the pipeline key), so
+-     * pass it rather than letting the decompiler guess from "was r0 written".
+-     * The guess fails on a program that uses r0 as a temp and exports through
+-     * h0: God of War HD's 2x-AA resolve computes (B-A)/2 in r0 and the average
+-     * in h0, and with r0 exported every 3D frame came out black. The depth
+-     * export bits come with it: the same resolve writes the scene depth it
+-     * reads from the AA depth surface into the resolved one, and without them
+-     * it wrote the quad's own depth there, so every depth-tested pass after it
+-     * (shadows, fog, rain, glows) was rejected.
+-     * RSX_FP_CTRL_AUTO=1 restores the guess. */
+-    static int ctrl_auto = -1;
+-    if (ctrl_auto < 0) ctrl_auto = getenv("RSX_FP_CTRL_AUTO") ? 1 : 0;
+-    u32 fp_ctrl = ctrl_auto ? RSX_FP_CTRL_AUTO : ctrl;
+-    /* The pipeline key leaves the constants out, so the shader must not bake
+-     * them: it reads them from b1, refilled for every draw from the draw's own
+-     * ucode. Baked, every material sharing a program took the colours of the
+-     * first draw compiled: Sonic's fur has the diffuse 0.09,0.16,0.51 in his
+-     * model, and he drew with the near-white of whatever came first. */
+-    u32 fp_nk = 0;
+-    int n = -1, alpha_done = 0;
+-    if (!fp_consts_inline()) {
+-        n = shadow_key
+-            ? rsx_fp_decompile_buffered_shadow_ex(vm_base + off, 4096, fp_ctrl, cube_mask, shadow,
+-                                                  hlsl, sizeof(hlsl), &fp_nk)
+-            : rsx_fp_decompile_buffered_ex(vm_base + off, 4096, fp_ctrl, cube_mask,
+-                                           hlsl, sizeof(hlsl), &fp_nk);
+-        if (n > 0 && fp_nk > VP_FPK_SLOTS) {
+-            static int _w = 0;
+-            if (PS3_LOG_FIRST(_w, 8))
+-                fprintf(stderr, "[FP] fp=0x%X has %u constants, %u fit: baking them%c",
+-                        fp_addr, fp_nk, VP_FPK_SLOTS, 10);
+-            n = -1;
+-        }
+-        if (n > 0) {   /* the slot starts with what vp_record_cb puts in front */
+-            char from[128], to[192];
+-            snprintf(from, sizeof from, "cbuffer PSConstants : register(b1) {\n"
+-                     "    float4 fp_constants[%u];\n    float4 fp_alpha;\n};\n", fp_nk ? fp_nk : 1u);
+-            snprintf(to, sizeof to, "cbuffer PSConstants : register(b1) {\n"
+-                     "    float4 rsx_b1_head[4];\n    float4 rsx_alphatest;\n"
+-                     "    float4 fp_constants[%u];\n};\n"
+-                     "#define fp_alpha float4(rsx_alphatest.y, 0.0, 0.0, 0.0)\n", VP_FPK_SLOTS);
+-            hlsl_replace_all(hlsl, sizeof hlsl, from, to);
+-            if (alpha_key) alpha_done = rsx_fp_apply_alpha_test_buffered(hlsl, sizeof hlsl, alpha_key & 0xFFFFu);
+-        }
+-    }
+-    if (n <= 0)
+-        n = shadow_key ? rsx_fp_decompile_shadow_ex(vm_base + off, 4096, fp_ctrl, cube_mask, shadow,
+-                                                    hlsl, sizeof(hlsl))
+-                       : rsx_fp_decompile_ex(vm_base + off, 4096, fp_ctrl, cube_mask, hlsl, sizeof(hlsl));
+-    if (n > 0 && alpha_key && !alpha_done)
+-        rsx_fp_apply_alpha_test(hlsl, sizeof hlsl, alpha_key & 0xFFFFu, (float)(alpha_key >> 16) / 255.0f);
++    int n = fp_build_hlsl(off, fp_addr, ctrl, cube_mask, shadow, shadow_key, alpha_key, hlsl, sizeof hlsl);
+     if (n <= 0) { static int _e=0; if(PS3_LOG_FIRST(_e, 16)) printf("[FP] decompile fail (fp=0x%08X)\n", fp_addr); return NULL; }
+-    if (s_rs != 1.0f) fp_wpos_rescale(hlsl, sizeof hlsl);
+     /* FP_LIST=1: every program the title actually compiles, with its size. A
+      * fragment program that hangs the GPU shows up here as an implausible
+      * instruction count long before it shows up as a TDR. */
+@@ -3522,6 +3537,39 @@ static ID3D12PipelineState* vp_get_fp_pso(int vs_idx, u32 fp_addr, u32 blend, in
+     return pso;
+ }
+ 
++/* A recorded draw's fragment program, handed to a worker (shader_prefetch) the
++ * first time its HLSL could differ from everything seen so far. render_frame
++ * builds the pipelines only after the walk, so a compile started here runs
++ * while the walker records the rest of the frame, and vp_get_fp_pso then waits
++ * for it, or reads it from the cache. A draw costs a lookup by address and the
++ * HLSL inputs, without hashing the program: a program that changes in place
++ * behind the same address only misses this head start. */
++static void fp_prefetch(const D3D12DrawRecord* dr)
++{
++    static int on = -1;
++    if (on < 0) { const char* e = getenv("D3D12_SHADER_PREFETCH");
++                  on = !(e && e[0] == '0') && !getenv("FP_OFF") && !getenv("FP_FORCE") &&
++                       !getenv("FP_ONE") && !getenv("FP_KILL") && !getenv("FP_SHOW") &&
++                       !getenv("FP_IDCOLOR") && !getenv("FP_TEX"); }
++    if (!on || !dr->fp_addr) return;
++    extern uint8_t* vm_base;
++    extern u32 cellGcmResolveLocated(int local, u32 offset);
++    if (!vm_base) return;
++    rsx_fp_shadow_desc shadow[RSX_MAX_TEXTURES];
++    const u32 shadow_key = dr_shadow_descs(dr, shadow), cube = dr_cube_mask(dr), alpha = dr_alpha_key(dr);
++    u32 k = 2166136261u;
++    const u32 parts[5] = { dr->fp_addr, dr->fp_ctrl, cube, shadow_key, alpha };
++    for (int i = 0; i < 5; i++) { k ^= parts[i]; k *= 16777619u; }
++    static u32 seen[1024];
++    if (seen[k & 1023] == (k | 1u)) return;
++    seen[k & 1023] = k | 1u;
++    const u32 off = cellGcmResolveLocated((dr->fp_addr & 0x3u) == 1, dr->fp_addr & ~0x3u);
++    if (off == 0xFFFFFFFFu) return;
++    static char hlsl[RSX_FP_HLSL_BUFFER_SIZE];
++    if (fp_build_hlsl(off, dr->fp_addr, dr->fp_ctrl, cube, shadow, shadow_key, alpha, hlsl, sizeof hlsl) <= 0) return;
++    shader_prefetch(hlsl, strlen(hlsl), "ps_5_0");
++}
++
+ /* Upload the guest texture for a VP draw into a per-frame texture slot
+  * (re-uploaded every frame: gcm/cube's plasma animates in guest memory).
+  * Returns the slot index or -1. Must run while the command list is open,
+@@ -8120,6 +8168,7 @@ static void d3d12_draw_arrays(void* ud, u32 primitive, u32 first, u32 count)
+                 } else { dr->vp_x = dr->vp_y = dr->vp_w = dr->vp_h = 0; }
+                 dr->cb_slot = s_d3d.draw_count;
+                 vp_record_cb(s_d3d.draw_count, dr->vs_idx, dr);
++                fp_prefetch(dr);
+                 s_d3d.draw_count++;
+             }
+             return;
+@@ -8235,6 +8284,7 @@ static void d3d12_draw_arrays(void* ud, u32 primitive, u32 first, u32 count)
+             } else { dr->vp_x = dr->vp_y = dr->vp_w = dr->vp_h = 0; }
+             dr->cb_slot = s_d3d.draw_count;
+                 vp_record_cb(s_d3d.draw_count, dr->vs_idx, dr);
++                fp_prefetch(dr);
+             s_d3d.draw_count++;
+             /* Anchor for merging the next DRAW_ARRAYS batch of this stream. */
+             s_d3d.merge_prev_draw  = (primitive == RSX_PRIMITIVE_TRIANGLES);
+@@ -8402,6 +8452,7 @@ static void d3d12_draw_indexed(void* ud, u32 primitive, u32 first, u32 count)
+         } else { dr->vp_x = dr->vp_y = dr->vp_w = dr->vp_h = 0; }
+         dr->cb_slot = s_d3d.draw_count;
+                 vp_record_cb(s_d3d.draw_count, dr->vs_idx, dr);
++                fp_prefetch(dr);
+         s_d3d.draw_count++;
+         /* Anchor for merging the next batch of this indexed stream. */
+         s_d3d.merge_prev_draw = (primitive == RSX_PRIMITIVE_TRIANGLES);
