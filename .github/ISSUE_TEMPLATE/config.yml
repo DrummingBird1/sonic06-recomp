@@ -3,3 +3,6 @@ contact_links:
   - name: Questions and answers
     url: https://github.com/DrummingBird1/sonic06-recomp#faq
     about: Is it legal, why not RPCS3, other versions of the game, Linux and Steam Deck. Please don't ask for game files.
+  - name: Discussions
+    url: https://github.com/DrummingBird1/sonic06-recomp/discussions
+    about: Ideas, questions and anything that isn't a bug or a hardware report.
