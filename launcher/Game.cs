@@ -21,7 +21,7 @@ namespace Sonic06Launcher
         string windowSize = "1280x720", language = "", aspect = "keep", scaler = "bilinear", resScale = "auto";
         int sharpen, aniso, brightness = 100, deadzone = 24;
         string adapter = "";
-        bool mouseLook;
+        bool mouseLook, mouseInvertX, mouseInvertY;
         int mouseSens = 30;
         readonly int[][] keys = DefaultKeyMap();
 
@@ -56,6 +56,10 @@ namespace Sonic06Launcher
         // The mouse as the right stick (PAD_MOUSE=<sensitivity>), and the keys (PAD_KEYS).
         public bool MouseLook { get => mouseLook; set => Set(ref mouseLook, value); }
         public int MouseSens { get => mouseSens; set => Set(ref mouseSens, Math.Max(1, Math.Min(100, value))); }
+        // Off: the view turns where the mouse goes. The game orbits its camera with the stick, so that is
+        // the stick's x turned around (PAD_MOUSE_FLIP=x) and its y as it is (measured in Wave Ocean).
+        public bool MouseInvertX { get => mouseInvertX; set => Set(ref mouseInvertX, value); }
+        public bool MouseInvertY { get => mouseInvertY; set => Set(ref mouseInvertY, value); }
 
         /// <summary>The pad controls a key can be bound to, as cellPad's PAD_KEYS names them.</summary>
         public static readonly string[] Controls =
@@ -224,6 +228,7 @@ namespace Sonic06Launcher
                 resScale = c.Str("resScale", "auto"), shaderAsync = c.Bool("shaderAsync"),
                 adapter = c.Str("adapter"), deadzone = Int(c, "deadzone", 24),
                 mouseLook = c.Bool("mouseLook"), mouseSens = Int(c, "mouseSens", 30),
+                mouseInvertX = c.Bool("mouseInvertX"), mouseInvertY = c.Bool("mouseInvertY"),
             };
             s.LoadKeys(c.Str("keys"));
             s.cfg = c;
@@ -240,6 +245,7 @@ namespace Sonic06Launcher
             cfg.Put("resScale", resScale); cfg.Put("shaderAsync", shaderAsync);
             cfg.Put("adapter", adapter); cfg.Put("deadzone", deadzone.ToString());
             cfg.Put("mouseLook", mouseLook); cfg.Put("mouseSens", mouseSens.ToString());
+            cfg.Put("mouseInvertX", mouseInvertX); cfg.Put("mouseInvertY", mouseInvertY);
             cfg.Put("keys", KeysAreDefault() ? "" : KeysText());
             cfg.Save();
         }
@@ -287,7 +293,12 @@ namespace Sonic06Launcher
             if (Deadzone != 24) e["PAD_DEADZONE"] = Deadzone.ToString(inv);
             // Without PAD_KEYS the game has its own default map; "start=0" is a map with no key at all.
             if (!KeysAreDefault()) { var k = KeysText(); e["PAD_KEYS"] = k.Length > 0 ? k : "start=0"; }
-            if (MouseLook) e["PAD_MOUSE"] = MouseSens.ToString(inv);
+            if (MouseLook)
+            {
+                e["PAD_MOUSE"] = MouseSens.ToString(inv);
+                var flip = (MouseInvertX ? "" : "x") + (MouseInvertY ? "y" : "");
+                if (flip.Length > 0) e["PAD_MOUSE_FLIP"] = flip;
+            }
             e["D3D12_SCREENSHOT_DIR"] = ScreenshotDir;
             return e;
         }

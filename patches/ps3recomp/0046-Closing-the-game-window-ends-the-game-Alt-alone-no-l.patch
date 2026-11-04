@@ -1,0 +1,288 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: DrummingBird1 <1979036+DrummingBird1@users.noreply.github.com>
+Date: Wed, 4 Nov 2026 05:30:08 +0200
+Subject: [PATCH] Closing the game window ends the game; Alt alone no longer
+ freezes it; PAD_MOUSE_FLIP
+
+- boot_main: when the window is closed (X, Alt+F4, Esc), the process ends.
+  It used to go on without a window, the guest and its sound running, and a
+  launcher waiting on it never saw it exit. RSX_KEEP_RUNNING=1 keeps that.
+- D3D12 window: WM_SYSCOMMAND SC_KEYMENU is swallowed. Alt (or F10) on its
+  own entered the window menu's modal loop on the thread that presents, and
+  the game stood still until the next key: 10 s between two taps of Alt.
+- cellPad: PAD_MOUSE_FLIP=x|y|xy turns a mouse axis around. Sonic '06 orbits
+  its camera with the right stick, so a mouse that looks where it goes needs
+  x flipped (measured in Wave Ocean). PAD_MOUSE_DEBUG also logs each 64th
+  poll and every recentre.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ libs/input/cellPad.c            |  35 +++++++--
+ libs/video/rsx_d3d12_backend.c  |   8 +++
+ runtime/ppu/tests/boot_main.cpp | 122 ++++++++++++++++++--------------
+ 3 files changed, 105 insertions(+), 60 deletions(-)
+
+diff --git a/libs/input/cellPad.c b/libs/input/cellPad.c
+index e70132fa..838989a0 100644
+--- a/libs/input/cellPad.c
++++ b/libs/input/cellPad.c
+@@ -735,9 +735,10 @@ static void pad_shutdown_backend(void)
+  * Enter = START, Tab = SELECT.
+  *
+  * PAD_MOUSE=<1..100> makes the mouse the right stick, with that sensitivity:
+- * while the game window has the focus the cursor is hidden and held at the
+- * centre of the window, and how fast it moves away from there is how far the
+- * stick is pushed. A camera key that is held wins over the mouse.
++ * while the game window has the focus the cursor is hidden and kept inside
++ * the window, and how fast it moves is how far the stick is pushed.
++ * PAD_MOUSE_FLIP=x|y|xy turns an axis around. A camera key that is held wins
++ * over the mouse.
+  * -----------------------------------------------------------------------*/
+ 
+ #ifdef _WIN32
+@@ -814,6 +815,12 @@ static float   s_mouse_x, s_mouse_y;   /* smoothed stick, -1..1 */
+ static unsigned long long s_mouse_moved_ms;   /* the last poll that saw a motion */
+ #define PAD_MOUSE_HOLD_MS 50
+ static int     s_mouse_dbg;         /* PAD_MOUSE_DEBUG */
++/* PAD_MOUSE_FLIP=x, y or xy: that axis of the mouse pushes the stick the other
++ * way. Sonic '06 orbits its camera with the right stick, so stick-left moves
++ * the camera left around the character and the view turns right: a mouse that
++ * looks where it goes needs x flipped there (measured in Wave Ocean). Stick-up
++ * lowers the camera and the view tilts up, which is already how a mouse looks. */
++static float   s_mouse_flip_x = 1, s_mouse_flip_y = 1;
+ 
+ /* The window class's cursor is what DefWindowProc shows on WM_SETCURSOR, so a
+  * blank one there hides the cursor over the game from this (non-window)
+@@ -857,17 +864,22 @@ static void pad_mouse_poll(HWND fg, PadHostState* hs)
+     ClientToScreen(fg, &c);
+     RECT sr = rc;
+     MapWindowPoints(fg, NULL, (POINT*)&sr, 2);
+-    ClipCursor(&sr);
+-    GetCursorPos(&p);
++    const BOOL clipped = ClipCursor(&sr);
++    const BOOL got = GetCursorPos(&p);
+     const unsigned long long now = pad_now_ms();
++    { static unsigned polls = 0;
++      if (s_mouse_dbg && (polls++ % 64) == 0)
++          printf("[cellPad] mouse look: poll %u, cursor %ld,%ld (read %d, clip %d, err %lu, tick %llu)\n",
++                 polls, (long)p.x, (long)p.y, got, clipped, got && clipped ? 0ul : GetLastError(), now); }
++    if (!got) return;
+     const unsigned long long dt = s_mouse_ms ? now - s_mouse_ms : 0;
+     float fx = 0, fy = 0;
+     if (dt > 0 && dt < 200) {
+         /* Pixels a millisecond, times the sensitivity: at 50, 1 px/ms (a
+          * brisk flick) is the stick pushed all the way. */
+         const float k = (float)s_mouse_sens * 0.02f / (float)dt;
+-        fx = (float)(p.x - s_mouse_ref.x) * k;
+-        fy = (float)(p.y - s_mouse_ref.y) * k;
++        fx = (float)(p.x - s_mouse_ref.x) * k * s_mouse_flip_x;
++        fy = (float)(p.y - s_mouse_ref.y) * k * s_mouse_flip_y;
+         /* PAD_MOUSE_DEBUG=1: every motion and every stick value, with GetTickCount64. */
+         { static int n = 0;
+           if ((p.x != s_mouse_ref.x || p.y != s_mouse_ref.y) && (s_mouse_dbg || PS3_LOG_FIRST(n, 3)))
+@@ -880,6 +892,12 @@ static void pad_mouse_poll(HWND fg, PadHostState* hs)
+     if (p.x < sr.left + qx || p.x > sr.right - qx || p.y < sr.top + qy || p.y > sr.bottom - qy) {
+         SetCursorPos(c.x, c.y);
+         s_mouse_ms = 0;
++        { static int n = 0;
++          if (s_mouse_dbg && PS3_LOG_FIRST(n, 40)) {
++              POINT q; GetCursorPos(&q);
++              printf("[cellPad] mouse look: recentre from %ld,%ld to %ld,%ld (reads %ld,%ld), window %ld,%ld..%ld,%ld (tick %llu)\n",
++                     (long)p.x, (long)p.y, (long)c.x, (long)c.y, (long)q.x, (long)q.y,
++                     (long)sr.left, (long)sr.top, (long)sr.right, (long)sr.bottom, now); } }
+     }
+     /* The mouse reports about every 16 ms, and the pad is polled more often
+      * than that, so most polls in the middle of a motion see none: the stick
+@@ -914,6 +932,9 @@ static void pad_poll_keyboard(void)
+         pad_keys_load();
+         const char* m = getenv("PAD_MOUSE");
+         s_mouse_sens = m ? atoi(m) : 0;
++        const char* fl = getenv("PAD_MOUSE_FLIP");
++        if (fl && strchr(fl, 'x')) s_mouse_flip_x = -1;
++        if (fl && strchr(fl, 'y')) s_mouse_flip_y = -1;
+         s_mouse_dbg = getenv("PAD_MOUSE_DEBUG") ? 1 : 0;
+         if (s_mouse_sens < 0) s_mouse_sens = 0;
+         if (s_mouse_sens > 100) s_mouse_sens = 100;
+diff --git a/libs/video/rsx_d3d12_backend.c b/libs/video/rsx_d3d12_backend.c
+index 270824c0..db1b97b7 100644
+--- a/libs/video/rsx_d3d12_backend.c
++++ b/libs/video/rsx_d3d12_backend.c
+@@ -778,6 +778,14 @@ static LRESULT CALLBACK d3d12_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
+             DestroyWindow(hwnd);
+         }
+         return 0;
++    case WM_SYSCOMMAND:
++        /* Alt (or F10) on its own: DefWindowProc enters the window menu's
++         * modal loop, and this thread, which also presents the frames, stays
++         * in it until the next key or click. The game stood still for 10 s
++         * between two taps of Alt. There is no menu to open, so the keyboard
++         * never enters it; Alt+F4 is SC_CLOSE and still closes the window. */
++        if ((wp & 0xFFF0) == SC_KEYMENU) return 0;
++        break;
+     }
+     return DefWindowProcA(hwnd, msg, wp, lp);
+ }
+diff --git a/runtime/ppu/tests/boot_main.cpp b/runtime/ppu/tests/boot_main.cpp
+index 72715f3e..752817d0 100644
+--- a/runtime/ppu/tests/boot_main.cpp
++++ b/runtime/ppu/tests/boot_main.cpp
+@@ -73,7 +73,7 @@ void     ps3_load_prx_modules(void) {}
+ 
+ #ifdef _WIN32
+ #include <windows.h>
+-#include <intrin.h>   /* _ReturnAddress */
++#include <intrin.h>   /* _ReturnAddress */
+ /* timeBeginPeriod: windows.h is included with WIN32_LEAN_AND_MEAN, which
+  * excludes the multimedia timer API, so it must be asked for by name -- and
+  * AFTER windows.h, since timeapi.h uses UINT and friends. */
+@@ -118,28 +118,28 @@ char* __cdecl cached_getenv(const char* name)
+         const char* k = s_env[i].key;
+         MemoryBarrier();
+         if (!k) break;
+-        if (!_stricmp(k, name)) {
+-            /* GETENV_STATS=1: which gate is being polled on a hot path. */
+-            static int st = -1;
+-            if (st < 0) st = env_lookup_os("GETENV_STATS") ? 1 : 0;
+-            if (st) {
+-                static unsigned cnt[1024]; static void* ra[1024]; static unsigned long long tot;
+-                cnt[i]++; ra[i] = _ReturnAddress();
+-                if ((++tot & ((1u << 22) - 1)) == 0) {
+-                    const uintptr_t exe = (uintptr_t)GetModuleHandleA(NULL);
+-                    for (int r = 0; r < 5; r++) {
+-                        unsigned b = 0;
+-                        for (unsigned j = 1; j <= mask; j++) if (cnt[j] > cnt[b]) b = j;
+-                        if (!cnt[b]) break;
+-                        fprintf(stderr, "[getenv-stats] %-28s %u calls  caller rva=0x%llX%c",
+-                                s_env[b].key, cnt[b], (unsigned long long)((uintptr_t)ra[b] - exe), 10);
+-                        cnt[b] = 0;
+-                    }
+-                    memset(cnt, 0, sizeof cnt);
+-                }
+-            }
+-            return (char*)s_env[i].val;
+-        }
++        if (!_stricmp(k, name)) {
++            /* GETENV_STATS=1: which gate is being polled on a hot path. */
++            static int st = -1;
++            if (st < 0) st = env_lookup_os("GETENV_STATS") ? 1 : 0;
++            if (st) {
++                static unsigned cnt[1024]; static void* ra[1024]; static unsigned long long tot;
++                cnt[i]++; ra[i] = _ReturnAddress();
++                if ((++tot & ((1u << 22) - 1)) == 0) {
++                    const uintptr_t exe = (uintptr_t)GetModuleHandleA(NULL);
++                    for (int r = 0; r < 5; r++) {
++                        unsigned b = 0;
++                        for (unsigned j = 1; j <= mask; j++) if (cnt[j] > cnt[b]) b = j;
++                        if (!cnt[b]) break;
++                        fprintf(stderr, "[getenv-stats] %-28s %u calls  caller rva=0x%llX%c",
++                                s_env[b].key, cnt[b], (unsigned long long)((uintptr_t)ra[b] - exe), 10);
++                        cnt[b] = 0;
++                    }
++                    memset(cnt, 0, sizeof cnt);
++                }
++            }
++            return (char*)s_env[i].val;
++        }
+     }
+     AcquireSRWLockExclusive(&s_env_lock);
+     const char* val = NULL; int found = 0;
+@@ -617,7 +617,23 @@ static DWORD WINAPI vblank_ticker(LPVOID)
+             if(++s_q3 % 8 == 0){ int r=sys_event_queue_inject(qid, 0x1234, 0, 0, 0);
+               static int _n=0; if(_n++<12) fprintf(stderr,"[INJQ3] injected q%u event rc=%d\n",qid,r); } }
+         if (rsx_ok) {
+-            if (rsx_pump_messages() != 0) { rsx_ok = 0; }
++            if (rsx_pump_messages() != 0) {
++                rsx_ok = 0;
++#ifdef _WIN32
++                /* The player closed the window (its X, Alt+F4, or Esc when
++                 * D3D12_ESC allows it). Going on without it left the guest
++                 * running with no window and its sound still playing, and the
++                 * launcher kept saying the game runs. There is no guest-side
++                 * shutdown to wait for, and an orderly exit would run DLL
++                 * teardown under threads still in guest code, so the process
++                 * ends here. RSX_KEEP_RUNNING=1 keeps the old behaviour. */
++                if (!getenv("RSX_KEEP_RUNNING")) {
++                    fprintf(stderr, "[boot] the window was closed: exiting\n");
++                    fflush(stdout); fflush(stderr);
++                    TerminateProcess(GetCurrentProcess(), 0);
++                }
++#endif
++            }
+             if (getenv("YDKJ_PACETRACE")) {
+                 static ULONGLONG s_win=0; static int s_pf=0, s_pres=0; static ULONGLONG s_presms=0;
+                 s_pf += fired; s_pres++;
+@@ -1018,45 +1034,45 @@ static DWORD WINAPI debug_console(LPVOID param)
+             dump_threads("console", self);
+         } else if (!strcmp(verb, "find32") && sscanf(cmd, "%*s %x", &a) == 1) {
+             /* find32 <hex>: every aligned big-endian u32 equal to <hex> in committed
+-             * guest memory below 0xC0000000 (first 4096 hits). */
++             * guest memory below 0xC0000000 (first 4096 hits). */
+             const uint32_t be = ((a & 0xFF) << 24) | ((a & 0xFF00) << 8) | ((a >> 8) & 0xFF00) | (a >> 24);
+             int hits = 0;
+-            for (uintptr_t p = 0; p < 0xC0000000u && hits < 4096 && vm_base; ) {
++            for (uintptr_t p = 0; p < 0xC0000000u && hits < 4096 && vm_base; ) {
+                 MEMORY_BASIC_INFORMATION mi;
+                 if (!VirtualQuery(vm_base + p, &mi, sizeof mi)) break;
+                 const uintptr_t end = (uintptr_t)((uint8_t*)mi.BaseAddress + mi.RegionSize) - (uintptr_t)vm_base;
+                 if (mi.State == MEM_COMMIT && !(mi.Protect & (PAGE_NOACCESS | PAGE_GUARD)))
+-                    for (uintptr_t q = p & ~3u; q + 4 <= end && q < 0xC0000000u && hits < 4096; q += 4)
++                    for (uintptr_t q = p & ~3u; q + 4 <= end && q < 0xC0000000u && hits < 4096; q += 4)
+                         if (*(const uint32_t*)(vm_base + q) == be) { dbg_printf("  0x%08X%c", (unsigned)q, 10); hits++; }
+                 p = end;
+             }
+             dbg_printf("  %d hit(s)%c", hits, 10);
+-        } else if (!strcmp(verb, "qbset") && sscanf(cmd, "%*s %x %x", &a, &b) == 2) {
+-            /* qbset <name-crc> <value>: set every integer QB struct member with
+-             * that name. A member is 16 bytes: xx 01|81 00 00 | name | value | next,
+-             * big-endian (GH3: bot_play, unlocked). Prints how many it set. */
+-            const uint32_t be_name = ((a & 0xFF) << 24) | ((a & 0xFF00) << 8) | ((a >> 8) & 0xFF00) | (a >> 24);
+-            const uint32_t be_val  = ((b & 0xFF) << 24) | ((b & 0xFF00) << 8) | ((b >> 8) & 0xFF00) | (b >> 24);
+-            unsigned n = 0;
+-            for (uintptr_t p = 0; p < 0xC0000000u && vm_base; ) {
+-                MEMORY_BASIC_INFORMATION mi;
+-                if (!VirtualQuery(vm_base + p, &mi, sizeof mi)) break;
+-                const uintptr_t end = (uintptr_t)((uint8_t*)mi.BaseAddress + mi.RegionSize) - (uintptr_t)vm_base;
+-                if (mi.State == MEM_COMMIT && (mi.Protect & (PAGE_READWRITE | PAGE_EXECUTE_READWRITE)))
+-                    for (uintptr_t q = (p + 4) & ~3u; q + 8 <= end; q += 4)
+-                        if (*(const uint32_t*)(vm_base + q) == be_name) {
+-                            /* type word: any flags byte, then 0x01 or 0x81 (integer), 00 00;
+-                             * only 0/1 values change -- an unlocked tag is a flag. */
+-                            const uint8_t* t = vm_base + q - 4;
+-                            const uint32_t v = *(const uint32_t*)(vm_base + q + 4);
+-                            if ((t[1] == 0x01 || t[1] == 0x81) && !t[2] && !t[3] &&
+-                                (v == 0 || v == 0x01000000u)) {
+-                                *(uint32_t*)(vm_base + q + 4) = be_val; n++;
+-                            }
+-                        }
+-                p = end;
+-            }
+-            dbg_printf("  qbset 0x%08X = %u: %u member(s)%c", a, b, n, 10);
++        } else if (!strcmp(verb, "qbset") && sscanf(cmd, "%*s %x %x", &a, &b) == 2) {
++            /* qbset <name-crc> <value>: set every integer QB struct member with
++             * that name. A member is 16 bytes: xx 01|81 00 00 | name | value | next,
++             * big-endian (GH3: bot_play, unlocked). Prints how many it set. */
++            const uint32_t be_name = ((a & 0xFF) << 24) | ((a & 0xFF00) << 8) | ((a >> 8) & 0xFF00) | (a >> 24);
++            const uint32_t be_val  = ((b & 0xFF) << 24) | ((b & 0xFF00) << 8) | ((b >> 8) & 0xFF00) | (b >> 24);
++            unsigned n = 0;
++            for (uintptr_t p = 0; p < 0xC0000000u && vm_base; ) {
++                MEMORY_BASIC_INFORMATION mi;
++                if (!VirtualQuery(vm_base + p, &mi, sizeof mi)) break;
++                const uintptr_t end = (uintptr_t)((uint8_t*)mi.BaseAddress + mi.RegionSize) - (uintptr_t)vm_base;
++                if (mi.State == MEM_COMMIT && (mi.Protect & (PAGE_READWRITE | PAGE_EXECUTE_READWRITE)))
++                    for (uintptr_t q = (p + 4) & ~3u; q + 8 <= end; q += 4)
++                        if (*(const uint32_t*)(vm_base + q) == be_name) {
++                            /* type word: any flags byte, then 0x01 or 0x81 (integer), 00 00;
++                             * only 0/1 values change -- an unlocked tag is a flag. */
++                            const uint8_t* t = vm_base + q - 4;
++                            const uint32_t v = *(const uint32_t*)(vm_base + q + 4);
++                            if ((t[1] == 0x01 || t[1] == 0x81) && !t[2] && !t[3] &&
++                                (v == 0 || v == 0x01000000u)) {
++                                *(uint32_t*)(vm_base + q + 4) = be_val; n++;
++                            }
++                        }
++                p = end;
++            }
++            dbg_printf("  qbset 0x%08X = %u: %u member(s)%c", a, b, n, 10);
+         } else if (!strcmp(verb, "prof") && sscanf(cmd, "%*s %u %u", &a, &b) >= 1) {
+             dbg_prof((DWORD)a, b ? b : 5);
+         } else if (!strcmp(verb, "hle")) {

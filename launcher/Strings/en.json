@@ -196,5 +196,7 @@
   "key_l3": "L3",
   "key_r3": "R3",
   "key_start": "START",
-  "key_select": "SELECT"
+  "key_select": "SELECT",
+  "keys_mouse_invert_x": "Invert left and right",
+  "keys_mouse_invert_y": "Invert up and down"
 }

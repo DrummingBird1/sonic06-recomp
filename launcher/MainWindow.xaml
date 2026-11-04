@@ -499,6 +499,16 @@
                                     <TextBlock Grid.Column="2" Text="{Binding Settings.MouseSens}" VerticalAlignment="Center"
                                                HorizontalAlignment="Right" FlowDirection="LeftToRight"/>
                                 </Grid>
+                                <WrapPanel IsEnabled="{Binding Settings.MouseLook}" Margin="0,0,0,4">
+                                    <CheckBox Style="{StaticResource Toggle}" IsChecked="{Binding Settings.MouseInvertX}" Margin="0,6,32,6"
+                                              AutomationProperties.Name="{l:T keys_mouse_invert_x}">
+                                        <TextBlock Text="{l:T keys_mouse_invert_x}"/>
+                                    </CheckBox>
+                                    <CheckBox Style="{StaticResource Toggle}" IsChecked="{Binding Settings.MouseInvertY}" Margin="0,6"
+                                              AutomationProperties.Name="{l:T keys_mouse_invert_y}">
+                                        <TextBlock Text="{l:T keys_mouse_invert_y}"/>
+                                    </CheckBox>
+                                </WrapPanel>
                                 <ItemsControl ItemsSource="{Binding KeyRows}" Margin="0,8,0,0">
                                     <ItemsControl.ItemsPanel>
                                         <ItemsPanelTemplate><UniformGrid Columns="2"/></ItemsPanelTemplate>

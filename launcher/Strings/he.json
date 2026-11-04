@@ -185,5 +185,7 @@
   "key_cam_down": "מצלמה למטה",
   "key_cam_left": "מצלמה שמאלה",
   "key_cam_right": "מצלמה ימינה",
-  "key_cross": "קפיצה (✕)"
+  "key_cross": "קפיצה (✕)",
+  "keys_mouse_invert_x": "להפוך ימין ושמאל",
+  "keys_mouse_invert_y": "להפוך למעלה ולמטה"
 }
