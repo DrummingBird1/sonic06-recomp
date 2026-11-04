@@ -5,7 +5,7 @@
 A dropout is an all-zero block with sound on both sides: the mixer read a block
 the game had not written yet (cellAudio zeroes each block after reading it).
 Loudness over seconds cannot see these: 7 silent blocks in every 15 still
-average out loud (PHASE1.md, section 39). Prints the total, then per 5 s
+average out loud. Prints the total, then per 5 s
 window the dropped and the loud blocks.
 """
 import sys

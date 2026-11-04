@@ -13,7 +13,7 @@ if (-not $Ps3Recomp) {
 $py = Join-Path $root '.venv\Scripts\python.exe'
 $tools = Join-Path $Ps3Recomp 'tools'
 $elf = Join-Path $root 'game\EBOOT.elf'
-if (-not (Test-Path $elf)) { throw "Missing $elf. Decrypt game\EBOOT.BIN with RPCS3 first (see AGENTS.md)." }
+if (-not (Test-Path $elf)) { throw "Missing $elf. Decrypt game\EBOOT.BIN with RPCS3 first (rpcs3 --decrypt, or the launcher)." }
 # Trace hooks keep backups of the files they touched; a relift would replace
 # those files and a later restore would copy the old lift back over the new.
 if (Test-Path (Join-Path $root 'work\hook_backup')) {

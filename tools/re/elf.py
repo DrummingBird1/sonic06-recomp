@@ -14,7 +14,7 @@ class Elf:
     def __init__(self, path=DEFAULT_ELF):
         self.path = pathlib.Path(path)
         if not self.path.exists():
-            raise SystemExit(f"{self.path} is missing: decrypt game/EBOOT.BIN with RPCS3 first (see AGENTS.md).")
+            raise SystemExit(f"{self.path} is missing: decrypt game/EBOOT.BIN with RPCS3 first (rpcs3 --decrypt, or the launcher).")
         self.data = self.path.read_bytes()
         d = self.data
         phoff = struct.unpack(">Q", d[0x20:0x28])[0]

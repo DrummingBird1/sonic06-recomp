@@ -11,7 +11,7 @@ Thanks for looking. Soleanna (the repository is `sonic06-recomp`) is a static re
 
 **Never commit, attach or link game files, or anything built from them.** That means the ISO or disc folder, `EBOOT.BIN` and `EBOOT.ELF`, the translated code, SPU programs, frame or shader dumps, and the built `sonic06.exe`. It also covers `game/`, `work/` and `build/`, which git ignores. The project only works as source code that each player builds from their own disc, so a PR or issue with game files in it is closed. A check on every PR enforces part of this.
 
-Screenshots of the game running in the port are fine in issues. The project's own page shows a few as release attachments; see `AGENTS.md` for that policy.
+Screenshots of the game running in the port are fine in issues. The project's own page shows a few as release attachments, never in git, and never official SEGA art, logos or assets taken from the disc.
 
 ## Building from source
 
@@ -38,12 +38,10 @@ launcher\bin\Release\net48\Launcher.exe --setup <iso or folder> <path to rpcs3.e
 | `src/` | The port's own code: settings for this game (`sonic06_config.c`) and handlers the toolkit lacks |
 | `patches/ps3recomp/` | The project's changes to ps3recomp, `0001` to `0047`, applied on top of the pinned commit |
 | `tools/` | `build.ps1`, `relift.ps1` and `run.ps1`; `re/` has the investigation tools; `sweep.py` runs every stage |
-| `docs/HANDOFF.md` | The state of the project, the test recipes and the next steps, in Hebrew |
-| `docs/PHASE1.md` | The history of every fix, with its measurements, in Hebrew |
-| `docs/behind-the-scenes/` | The development diary, in Hebrew |
+| `docs/images/` | The pictures on the README |
 | `game/`, `work/`, `build/` | Local only: your disc, the decrypted and translated code, the build |
 
-The docs are in Hebrew because the project started that way. Issues and PRs in English are welcome, and anything you learn will be written into the docs.
+Each fix is explained in its commit message and in its patch file. Issues and PRs in English are welcome.
 
 ## The toolkit and its patches
 
@@ -66,7 +64,7 @@ pwsh tools/run.ps1 -Seconds 60 -Env 'PS3_VERBOSE=0;PAD_SCRIPT=12:0x4000'
 - **`CELLMARK_DUMP*`**: saves frames.
 - **`SONIC06_BOOT=stage`**: starts in the developer menu, the quickest way into any stage.
 
-The recipes, and every environment switch, are in `docs/HANDOFF.md`. For the launcher, `tools/launcher_ui.ps1` clicks through its pages, and `Launcher.exe --layout <file>` looks for cut text in all ten languages.
+The settings the port starts with, and why, are in `src/sonic06_config.c`. For the launcher, `tools/launcher_ui.ps1` clicks through its pages, and `Launcher.exe --layout <file>` looks for cut text in all ten languages.
 
 Temporary hooks in the translated code go through `tools/re/hook.py`, which keeps a backup. Run `hook.py restore` before you commit.
 

@@ -3,23 +3,25 @@
     python tools/ci/check_repo.py            # the tracked files
     python tools/ci/check_repo.py --selftest # proves each check can fail
 
-1. Nothing from the game and nothing built from it: the project's rule (AGENTS.md).
+1. Nothing from the game and nothing built from it: the project's rule (CONTRIBUTING.md).
    Paths under game/, work/, build/, deps/ or dist/; disc and executable images; frame
-   and shader dumps; this machine's local files.
+   and shader dumps; this machine's local files; the maintainer's working notes and
+   agent instructions, which stay local.
 2. No file over 4 MB: everything the project tracks is text, small pictures or icons.
 3. Pictures and video only in docs/images and launcher/: the drawn banner, the logo
    and the launcher's own screenshots. Game screenshots go to releases, not git.
 4. The launcher's translations: every file parses, has no key that en.json lacks
    (a typo would silently fall back to English), and keeps en.json's {0} placeholders.
 5. No path from someone's own PC in a text file: a user profile (C:\\Users\\name) or a
-   folder on another drive (D: to Z:). Machine paths belong in AGENTS.local.md and
-   launcher.local.json, which stay out of git.
+   folder on another drive (D: to Z:). Machine paths belong in launcher.local.json,
+   which stays out of git.
 """
 import json, pathlib, re, subprocess, sys
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 FORBIDDEN = re.compile(r"^(game|work|build|deps|dist)/|\.(iso|elf|self|sprx|bin|pkg|pup|bmp|dxbc)$"
                        r"|_dump\.hlsl$|\.local\.(md|json)$", re.I)
+NOTES = re.compile(r"^(\.claude/|CLAUDE\.md$|AGENTS[^/]*\.md$|docs/(?!images/)|tools/behind_the_scenes\.py$)", re.I)
 MEDIA = re.compile(r"\.(png|jpe?g|gif|webp|bmp|mp4|webm|mov|avi|ico)$", re.I)
 MEDIA_OK = ("docs/images/", "launcher/")
 MAX_BYTES = 4 * 1024 * 1024
@@ -44,6 +46,8 @@ def path_problems(paths, size_of):
     for p in paths:
         if FORBIDDEN.search(p):
             bad.append(f"{p}: game files and anything built from them stay out of git")
+        elif NOTES.search(p):
+            bad.append(f"{p}: working notes and agent instructions stay local, out of git")
         elif MEDIA.search(p) and not p.startswith(MEDIA_OK):
             bad.append(f"{p}: pictures and video belong in docs/images or launcher/ (game screenshots go to releases)")
         elif size_of(p) > MAX_BYTES:
@@ -81,9 +85,12 @@ def selftest():
     sizes = {"docs/big.md": MAX_BYTES + 1}
     must_fail = ["game/disc/PS3_GAME/USRDIR/x.arc", "work/recompiled/a.c", "build/sonic06.exe", "EBOOT.BIN",
                  "foo/EBOOT.ELF", "disc.iso", "frame_000.bmp", "vs_12_dump.hlsl", "AGENTS.local.md",
-                 "docs/shot.png", "README-clip.mp4", "docs/big.md"]
-    must_pass = ["docs/images/banner.png", "launcher/app.ico", "launcher/logo.png", "AGENTS.local.example.md",
-                 "src/sonic06_config.c", "docs/PHASE1.md"]
+                 "docs/shot.png", "README-clip.mp4", "docs/big.md", "AGENTS.md", "CLAUDE.md",
+                 ".claude/launch.json", "docs/notes.md", "docs/diary/01.md"]
+    must_pass = ["docs/images/banner.png", "launcher/app.ico", "launcher/logo.png", "CONTRIBUTING.md",
+                 "src/sonic06_config.c", "README.md"]
+    sizes["docs/images/big.png"] = MAX_BYTES + 1
+    must_fail.append("docs/images/big.png")
     fails = {p for p in must_fail if path_problems([p], lambda q: sizes.get(q, 10))}
     passes = {p for p in must_pass if not path_problems([p], lambda q: sizes.get(q, 10))}
     strings = string_problems({"en": {"a": "x {0}"}, "de": {"a": "y", "typo": "z"}, "fr": ValueError("bad")})

@@ -63,8 +63,7 @@ static void sonic06_config(void)
      * unless a dry fence poll kicks it. The main thread here waits in a 1 ms
      * usleep poll instead, so new commands sat for up to 4 ms before the RSX
      * saw them, on every hand-off between the two, and the first scene ran
-     * 25.8 flips/s against 28.4 at 1 ms (5 alternating pairs, PHASE1.md
-     * section 40). */
+     * 25.8 flips/s against 28.4 at 1 ms (5 alternating pairs). */
     set_default("GCM_TICK_MS", "1");
 
     /* The keyboard as a PC player holds it, in place of the toolkit's

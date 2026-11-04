@@ -75,7 +75,7 @@ src/zz_*
 
 # launcher settings of this machine
 launcher.local.json
-# this machine's paths for agents (AGENTS.md is the shared part)
+# this machine's paths for agents
 AGENTS.local.md
 
 # The launcher's build output, and the tools it downloads (FFmpeg, ps3recomp).
