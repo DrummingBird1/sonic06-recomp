@@ -16,6 +16,7 @@
 
 <p align="center">
   <a href="https://github.com/DrummingBird1/sonic06-recomp/releases/tag/v0.1.0"><b>Download 0.1.0</b></a> ·
+  <a href="#screenshots">Screenshots</a> ·
   <a href="#getting-started">Getting started</a> ·
   <a href="#status">Status</a> ·
   <a href="#how-it-works">How it works</a> ·
@@ -24,6 +25,29 @@
 
 > [!IMPORTANT]
 > **Version 0.1.0 is an early work in progress.** Every stage and boss starts, but nobody has played a stage to the end yet, and it has been tested on one PC. You need your own copy of the game (BLES00028). This project is not affiliated with or endorsed by SEGA.
+
+## Screenshots
+
+<table>
+  <tr>
+    <td width="50%"><img src="https://github.com/DrummingBird1/sonic06-recomp/releases/download/v0.1.0/screenshot-wave-ocean.jpg" alt="Sonic running on the water in Wave Ocean, between rock arches"></td>
+    <td width="50%"><img src="https://github.com/DrummingBird1/sonic06-recomp/releases/download/v0.1.0/screenshot-crisis-city.jpg" alt="Sonic grinding a rail between the burning towers of Crisis City"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub><b>Wave Ocean</b>, running on the water</sub></td>
+    <td align="center"><sub><b>Crisis City</b>, on a rail</sub></td>
+  </tr>
+  <tr>
+    <td><img src="https://github.com/DrummingBird1/sonic06-recomp/releases/download/v0.1.0/screenshot-wave-ocean-jump.jpg" alt="Sonic in the air over the sea in Wave Ocean"></td>
+    <td><img src="https://github.com/DrummingBird1/sonic06-recomp/releases/download/v0.1.0/screenshot-soleanna.jpg" alt="Sonic in a square of Soleanna's town"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub><b>Wave Ocean</b>, a jump over the sea</sub></td>
+    <td align="center"><sub><b>Soleanna</b>, the town</sub></td>
+  </tr>
+</table>
+
+<sub>Captured with F12 in this port, on Windows, from the author's own copy, at an internal resolution of 3840×2160 and shown here at 1920×1080. The game and its images belong to SEGA. The pictures are attached to the release, not kept in git.</sub>
 
 ## Status
 
