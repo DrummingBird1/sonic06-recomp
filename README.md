@@ -44,7 +44,7 @@ Then press **Play**. The other pages:
 
 The launcher speaks English, Hebrew, Spanish, French, German, Italian, Portuguese (Brazil), Japanese, Russian and Arabic, and starts in your Windows language. The translations have not been checked by native speakers yet: corrections to `launcher/Strings/*.json` are welcome.
 
-Controllers work through SDL2, which the launcher downloads: Xbox, DualShock 4, DualSense and Switch Pro. Without SDL2 the game falls back to XInput, which sees Xbox-style controllers only. Without a controller, the keyboard is the pad: by default arrows move, Z jumps, Enter is START, and the Settings page changes any of it.
+Controllers work through SDL2, which the launcher downloads: Xbox, DualShock 4, DualSense and Switch Pro. Without SDL2 the game falls back to XInput, which sees Xbox-style controllers only. Without a controller, the keyboard and mouse are the pad: by default WASD or the arrows move, Space jumps, Enter confirms, left Ctrl or the right mouse button goes back, Esc pauses, and the mouse turns the camera. The Settings page changes any of it.
 
 From a console, `tools/launcher.ps1` has the same steps without the window.
 

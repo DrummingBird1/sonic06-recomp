@@ -21,7 +21,7 @@ namespace Sonic06Launcher
         string windowSize = "1280x720", language = "", aspect = "keep", scaler = "bilinear", resScale = "auto";
         int sharpen, aniso, brightness = 100, deadzone = 24;
         string adapter = "";
-        bool mouseLook, mouseInvertX, mouseInvertY;
+        bool mouseLook = true, mouseInvertX, mouseInvertY;
         int mouseSens = 30;
         readonly int[][] keys = DefaultKeyMap();
 
@@ -31,7 +31,7 @@ namespace Sonic06Launcher
         public bool VSync { get => vsync; set => Set(ref vsync, value); }
         public string Language { get => language; set => Set(ref language, value ?? ""); }
         public bool Mute { get => mute; set => Set(ref mute, value); }
-        // Controls. PAD_NO_KEYBOARD, D3D12_ESC=ignore.
+        // Controls. PAD_NO_KEYBOARD, D3D12_ESC=ignore|close.
         public bool Keyboard { get => keyboard; set => Set(ref keyboard, value); }
         public bool EscCloses { get => escCloses; set => Set(ref escCloses, value); }
         // The present pass (patch 0031): D3D12_ASPECT, D3D12_SCALER, D3D12_SHARPEN,
@@ -67,14 +67,16 @@ namespace Sonic06Launcher
             "up", "down", "left", "right", "cam_up", "cam_down", "cam_left", "cam_right",
             "cross", "circle", "square", "triangle", "l1", "r1", "l2", "r2", "l3", "r3", "start", "select",
         };
-        // Windows virtual keys, two per control: the game's map without PAD_KEYS (cellPad.c).
+        // Windows virtual keys, two per control: the game's map without PAD_KEYS (src/sonic06_config.c).
+        // WASD or arrows, Space and Enter = ✕, left Ctrl and right mouse = ○, E and left mouse = □,
+        // F = △, Q/R = L1/R1, 1/2 = L2/R2, middle mouse = R3, Esc = START, Tab = SELECT.
         static int[][] DefaultKeyMap() => new[]
         {
-            new[] { 0x26, 0 }, new[] { 0x28, 0 }, new[] { 0x25, 0 }, new[] { 0x27, 0 },
+            new[] { (int)'W', 0x26 }, new[] { (int)'S', 0x28 }, new[] { (int)'A', 0x25 }, new[] { (int)'D', 0x27 },
             new[] { 0, 0 }, new[] { 0, 0 }, new[] { 0, 0 }, new[] { 0, 0 },
-            new[] { (int)'Z', 0 }, new[] { (int)'X', 0 }, new[] { (int)'A', 0 }, new[] { (int)'S', 0 },
-            new[] { (int)'Q', 0 }, new[] { (int)'W', 0 }, new[] { (int)'1', 0 }, new[] { (int)'2', 0 },
-            new[] { 0, 0 }, new[] { 0, 0 }, new[] { 0x0D, 0 }, new[] { 0x09, 0 },
+            new[] { 0x20, 0x0D }, new[] { 0xA2, 0x02 }, new[] { (int)'E', 0x01 }, new[] { (int)'F', 0 },
+            new[] { (int)'Q', 0 }, new[] { (int)'R', 0 }, new[] { (int)'1', 0 }, new[] { (int)'2', 0 },
+            new[] { 0, 0 }, new[] { 0x04, 0 }, new[] { 0x1B, 0 }, new[] { 0x09, 0 },
         };
 
         public int GetKey(int control, int slot) => keys[control][slot];
@@ -227,7 +229,7 @@ namespace Sonic06Launcher
                 sharpen = Int(c, "sharpen", 0), fxaa = c.Bool("fxaa"), aniso = Int(c, "aniso", 0), brightness = Int(c, "brightness", 100),
                 resScale = c.Str("resScale", "auto"), shaderAsync = c.Bool("shaderAsync"),
                 adapter = c.Str("adapter"), deadzone = Int(c, "deadzone", 24),
-                mouseLook = c.Bool("mouseLook"), mouseSens = Int(c, "mouseSens", 30),
+                mouseLook = c.Bool("mouseLook", true), mouseSens = Int(c, "mouseSens", 30),
                 mouseInvertX = c.Bool("mouseInvertX"), mouseInvertY = c.Bool("mouseInvertY"),
             };
             s.LoadKeys(c.Str("keys"));
@@ -279,7 +281,7 @@ namespace Sonic06Launcher
             // These two are read as "set or not", so they are only set when on.
             if (Mute) e["PS3_MUTE"] = "1";
             if (!Keyboard) e["PAD_NO_KEYBOARD"] = "1";
-            if (!EscCloses) e["D3D12_ESC"] = "ignore";
+            e["D3D12_ESC"] = EscCloses ? "close" : "ignore";   // the game's own default is ignore
             e["D3D12_ASPECT"] = Aspect;
             e["D3D12_SCALER"] = Scaler;
             if (Sharpen > 0) e["D3D12_SHARPEN"] = (Sharpen / 100.0).ToString("0.00", inv);

@@ -100,7 +100,7 @@
   "settings_keyboard": "O teclado funciona como controle",
   "settings_keyboard_desc": "Um controle estilo Xbox (XInput) sempre funciona. Setas movem, Z pula, Enter é START.",
   "settings_esc": "Esc fecha o jogo",
-  "settings_esc_desc": "Desligado: Esc não faz nada, então pausar nunca fecha o jogo sem querer.",
+  "settings_esc_desc": "Desligado: Esc nunca fecha o jogo. Nas teclas padrão ele é START, que pausa.",
   "lang_system": "Igual ao Windows",
   "lang_en": "Inglês",
   "lang_ja": "Japonês",

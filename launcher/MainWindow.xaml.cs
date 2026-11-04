@@ -330,6 +330,7 @@ namespace Sonic06Launcher
                 case 0x05: return Loc.I.F("key_mouse_n", "4");
                 case 0x06: return Loc.I.F("key_mouse_n", "5");
                 case 0x0D: return "Enter";
+                case 0x1B: return "Esc";
                 case 0x20: return Loc.I["key_space"];
                 case 0x26: return "↑";
                 case 0x28: return "↓";

@@ -100,7 +100,7 @@
   "settings_keyboard": "Tastatur dient als Controller",
   "settings_keyboard_desc": "Ein Controller im Xbox-Stil (XInput) funktioniert immer. Pfeile bewegen, Z springt, Enter ist START.",
   "settings_esc": "Esc beendet das Spiel",
-  "settings_esc_desc": "Aus: Esc tut nichts, so beendet Pausieren das Spiel nie aus Versehen.",
+  "settings_esc_desc": "Aus: Esc beendet das Spiel nie. In der Standardbelegung ist es START, das pausiert.",
   "lang_system": "Wie Windows",
   "lang_en": "Englisch",
   "lang_ja": "Japanisch",

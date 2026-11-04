@@ -105,7 +105,7 @@
   "settings_keyboard": "המקלדת משמשת כבקר",
   "settings_keyboard_desc": "בקר תמיד עובד: Xbox, ועם SDL2 גם PlayStation ו-Switch. בלי בקר, המקשים שלמטה משחקים.",
   "settings_esc": "Esc סוגר את המשחק",
-  "settings_esc_desc": "כבוי: Esc לא עושה כלום, כך שעצירה לעולם לא סוגרת את המשחק בטעות.",
+  "settings_esc_desc": "כבוי: ‏Esc לא סוגר את המשחק. במקשי ברירת המחדל הוא START, שעוצר את המשחק.",
 
   "lang_system": "כמו ב-Windows",
   "lang_en": "אנגלית",

@@ -100,7 +100,7 @@
   "settings_keyboard": "Le clavier sert de manette",
   "settings_keyboard_desc": "Une manette type Xbox (XInput) fonctionne toujours. Flèches pour bouger, Z pour sauter, Entrée pour START.",
   "settings_esc": "Échap ferme le jeu",
-  "settings_esc_desc": "Désactivé : Échap ne fait rien, donc mettre en pause ne ferme jamais le jeu par erreur.",
+  "settings_esc_desc": "Désactivé : Échap ne ferme jamais le jeu. Dans les touches par défaut, c'est START, qui met en pause.",
   "lang_system": "Comme Windows",
   "lang_en": "Anglais",
   "lang_ja": "Japonais",

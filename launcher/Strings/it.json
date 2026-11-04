@@ -100,7 +100,7 @@
   "settings_keyboard": "La tastiera funziona come controller",
   "settings_keyboard_desc": "Un controller stile Xbox (XInput) funziona sempre. Frecce per muoversi, Z per saltare, Invio è START.",
   "settings_esc": "Esc chiude il gioco",
-  "settings_esc_desc": "Disattivato: Esc non fa nulla, così mettere in pausa non chiude mai il gioco per sbaglio.",
+  "settings_esc_desc": "Disattivato: Esc non chiude mai il gioco. Nei tasti predefiniti è START, che mette in pausa.",
   "lang_system": "Come Windows",
   "lang_en": "Inglese",
   "lang_ja": "Giapponese",

@@ -100,7 +100,7 @@
   "settings_keyboard": "Клавиатура работает как геймпад",
   "settings_keyboard_desc": "Геймпад в стиле Xbox (XInput) работает всегда. Стрелки двигают, Z прыжок, Enter это START.",
   "settings_esc": "Esc закрывает игру",
-  "settings_esc_desc": "Выкл.: Esc ничего не делает, поэтому пауза никогда не закроет игру случайно.",
+  "settings_esc_desc": "Выкл.: Esc никогда не закрывает игру. В раскладке по умолчанию это START, пауза.",
   "lang_system": "Как в Windows",
   "lang_en": "Английский",
   "lang_ja": "Японский",

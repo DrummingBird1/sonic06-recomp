@@ -105,7 +105,7 @@
   "settings_keyboard": "Keyboard works as a controller",
   "settings_keyboard_desc": "A controller always works: Xbox, and with SDL2 PlayStation and Switch too. Without one, the keys below play.",
   "settings_esc": "Esc closes the game",
-  "settings_esc_desc": "Off: Esc does nothing, so pausing never closes the game by mistake.",
+  "settings_esc_desc": "Off: Esc never closes the game. In the default keys it is START, which pauses.",
 
   "lang_system": "Same as Windows",
   "lang_en": "English",

@@ -100,7 +100,7 @@
   "settings_keyboard": "El teclado funciona como mando",
   "settings_keyboard_desc": "Un mando tipo Xbox (XInput) siempre funciona. Las flechas mueven, Z salta, Intro es START.",
   "settings_esc": "Esc cierra el juego",
-  "settings_esc_desc": "Desactivado: Esc no hace nada, así que pausar nunca cierra el juego por error.",
+  "settings_esc_desc": "Desactivado: Esc nunca cierra el juego. En las teclas predeterminadas es START, que pausa.",
   "lang_system": "Igual que Windows",
   "lang_en": "Inglés",
   "lang_ja": "Japonés",

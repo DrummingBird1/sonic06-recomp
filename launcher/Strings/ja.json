@@ -100,7 +100,7 @@
   "settings_keyboard": "キーボードをコントローラーとして使う",
   "settings_keyboard_desc": "Xbox 形式 (XInput) のコントローラーは常に使えます。矢印で移動、Z でジャンプ、Enter が START。",
   "settings_esc": "Esc でゲームを閉じる",
-  "settings_esc_desc": "オフ: Esc は何もしないので、ポーズのつもりでゲームを閉じてしまうことはありません。",
+  "settings_esc_desc": "オフ: Esc でゲームが閉じることはありません。初期設定のキーでは START (ポーズ) です。",
   "lang_system": "Windows と同じ",
   "lang_en": "英語",
   "lang_ja": "日本語",

@@ -66,4 +66,22 @@ static void sonic06_config(void)
      * 25.8 flips/s against 28.4 at 1 ms (5 alternating pairs, PHASE1.md
      * section 40). */
     set_default("GCM_TICK_MS", "1");
+
+    /* The keyboard as a PC player holds it, in place of the toolkit's
+     * controller-shaped map (arrows, Z/X/A/S): WASD or the arrows move, Space
+     * jumps. Enter is CROSS too, because the menus confirm with CROSS, which
+     * also passes the title screen, and START does nothing on the main menu
+     * (measured). Esc is START, the pause menu. CIRCLE, back in the menus, is
+     * the left Ctrl and the right mouse button: not Shift, whose fifth press in
+     * a row brings up Windows' Sticky Keys prompt over the game. SQUARE is E
+     * and the left button, TRIANGLE F, L1/R1 Q/R, L2/R2 1/2, R3 the middle
+     * button, SELECT Tab. The launcher shows the same map (DefaultKeyMap in
+     * launcher/Game.cs) and sends PAD_KEYS only when the player changed it. */
+    set_default("PAD_KEYS", "up=0x57+0x26,down=0x53+0x28,left=0x41+0x25,right=0x44+0x27,"
+                            "cross=0x20+0x0D,circle=0xA2+0x02,square=0x45+0x01,triangle=0x46,"
+                            "l1=0x51,r1=0x52,l2=0x31,r2=0x32,r3=0x04,start=0x1B,select=0x09");
+
+    /* Esc is START above, so it must not close the window too. The launcher's
+     * "Esc closes the game" sends D3D12_ESC=close. */
+    set_default("D3D12_ESC", "ignore");
 }

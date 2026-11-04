@@ -100,7 +100,7 @@
   "settings_keyboard": "لوحة المفاتيح تعمل كيد تحكم",
   "settings_keyboard_desc": "يد التحكم بنمط Xbox ‏(XInput) تعمل دائمًا. الأسهم للحركة، وZ للقفز، وEnter هو START.",
   "settings_esc": "Esc يغلق اللعبة",
-  "settings_esc_desc": "معطّل: لا يفعل Esc شيئًا، فلا يغلق الإيقاف المؤقت اللعبةَ عن طريق الخطأ أبدًا.",
+  "settings_esc_desc": "معطّل: لا يغلق Esc اللعبة أبدًا. في المفاتيح الافتراضية هو START، الذي يوقف اللعبة مؤقتًا.",
   "lang_system": "مثل Windows",
   "lang_en": "الإنجليزية",
   "lang_ja": "اليابانية",
