@@ -1,0 +1,481 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: DrummingBird1 <1979036+DrummingBird1@users.noreply.github.com>
+Date: Wed, 4 Nov 2026 02:04:26 +0200
+Subject: [PATCH] sys_ppu_thread: reclaim the slots of finished threads nobody
+ joined, and recycle their stacks
+
+Sonic makes, stops and drops about five joinable threads on every respawn and never joins
+them. lv2 absorbs that in a far larger thread table; here the 64 slots were gone after a
+dozen deaths, sys_ppu_thread_create failed, and the game waited for ever on the semaphore of
+a thread it never got (the freeze in the town after many deaths). When the table is full the
+oldest finished, unjoined thread's slot is taken as if it had been detached, and guest
+stacks go back to a free list instead of leaking from the bump allocator.
+
+Also the hang watchdog's census: who waits on which semaphore with the last 8192 operations
+on it, and the last guest threads with their slot states.
+---
+ runtime/ppu/tests/boot_main.cpp   |   5 ++
+ runtime/syscalls/sys_ppu_thread.c | 129 +++++++++++++++++++++++++++++-
+ runtime/syscalls/sys_semaphore.c  | 121 ++++++++++++++++++++++++++++
+ runtime/syscalls/sys_semaphore.h  |  11 +++
+ 4 files changed, 264 insertions(+), 2 deletions(-)
+
+diff --git a/runtime/ppu/tests/boot_main.cpp b/runtime/ppu/tests/boot_main.cpp
+index fef9d32a..72715f3e 100644
+--- a/runtime/ppu/tests/boot_main.cpp
++++ b/runtime/ppu/tests/boot_main.cpp
+@@ -680,6 +680,7 @@ static __declspec(thread) size_t s_dbg_capn = 0;
+ 
+ extern "C" const char* g_hle_inflight[];   /* ppu_hle.cpp; 64 entries */
+ extern "C" void ppu_report_guest_lrs(void); /* ppu_loader.cpp */
++extern "C" void sys_semaphore_census(void); /* sys_semaphore.c */
+ 
+ static void dump_threads(const char* label, HMODULE self)
+ {
+@@ -705,6 +706,10 @@ static void dump_threads(const char* label, HMODULE self)
+       if (!any) dbg_printf("[WATCHDOG] no guest thread is inside an HLE\n"); }
+     dbg_printf("[WATCHDOG] guest threads, by guest lr:\n");
+     ppu_report_guest_lrs();
++    /* A guest lock built on a semaphore (Sonic's allocator) parks its waiters
++     * in an lv2 syscall, which the HLE list above does not see. Printed before
++     * any thread is suspended, so stderr's lock is free. */
++    sys_semaphore_census();
+     DWORD me = GetCurrentThreadId(), pid = GetCurrentProcessId();
+     HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+     THREADENTRY32 te; te.dwSize = sizeof te;
+diff --git a/runtime/syscalls/sys_ppu_thread.c b/runtime/syscalls/sys_ppu_thread.c
+index 41d5721c..9e64877a 100644
+--- a/runtime/syscalls/sys_ppu_thread.c
++++ b/runtime/syscalls/sys_ppu_thread.c
+@@ -29,6 +29,21 @@ static PPU_TLS int     s_exit_armed = 0;
+ #include <stdlib.h>   /* getenv (else return value truncated to int on x64) */
+ #include "ps3emu/log_first.h"
+ #include "ps3emu/thread_name.h"
++
++/* The last threads the guest made, with when each was made, started and ended,
++ * and (sys_ppu_thread_census) the guest object each was given: a thread that
++ * ends before it ever ran leaves whoever waits on it waiting. */
++typedef struct { uint32_t tid, arg, t_create, t_start, t_exit; char name[32]; } thr_ev_t;
++#define THR_RING 24
++static thr_ev_t s_thr_ring[THR_RING];
++static volatile long s_thr_n;
++static thr_ev_t* thr_find(uint32_t tid)
++{
++    long n = s_thr_n;
++    for (long i = n - 1; i >= 0 && i > n - THR_RING - 1; i--)
++        if (s_thr_ring[i % THR_RING].tid == tid) return &s_thr_ring[i % THR_RING];
++    return NULL;
++}
+ #ifndef _WIN32
+ #include <errno.h>
+ #endif
+@@ -85,6 +100,63 @@ static void table_unlock(void)
+  * The thread id is the slot + 1. A title that polls sys_ppu_thread_get_priority(id) until it returns ESRCH (to see a
+  * worker finish) only gets its answer if the next thread does not take that slot, and so that id, at once. So the
+  * search continues after the slot used last (next-fit): an id comes back only after the other slots were used. */
++/* Guest stacks come from a bump allocator that never gives memory back, so a slot's stack is kept here when the
++ * slot is freed and handed to the next thread that asks for the same size. Under the table lock. */
++static struct { uint32_t addr, size; } s_stack_free[128];
++static int s_stack_nfree;
++
++static void stack_recycle(ppu_thread_info* t)
++{
++    if (t->stack_addr && s_stack_nfree < 128) {
++        s_stack_free[s_stack_nfree].addr = t->stack_addr;
++        s_stack_free[s_stack_nfree].size = t->stack_size;
++        s_stack_nfree++;
++    }
++    t->stack_addr = 0;
++}
++
++static uint32_t stack_take(uint32_t size)
++{
++    for (int i = s_stack_nfree - 1; i >= 0; i--)
++        if (s_stack_free[i].size == size) {
++            uint32_t a = s_stack_free[i].addr;
++            s_stack_free[i] = s_stack_free[--s_stack_nfree];
++            memset(vm_to_host(a), 0, size);   /* a new stack starts zeroed, as a fresh one does */
++            return a;
++        }
++    return 0;
++}
++
++/* The table is full of threads that finished and were never joined. Sonic's thread objects are made, stopped and
++ * dropped on every respawn without a join (about five threads a time), which lv2 absorbs in its far larger thread
++ * table; here the 64 slots were gone after a dozen deaths, sys_ppu_thread_create failed, and the game waited for ever
++ * on a thread it had never got. A thread nobody has joined by now is not going to be: take the oldest one's slot,
++ * as if it had been detached. A later join on it gets CELL_ESRCH. */
++static int reap_finished_slot(int from)
++{
++    for (int n = 0; n < PPU_THREAD_MAX; n++) {
++        int i = (from + n) % PPU_THREAD_MAX;
++        ppu_thread_info* t = &g_ppu_threads[i];
++        if (t->state != PPU_THREAD_STATE_FINISHED) continue;
++#ifdef _WIN32
++        if (t->host_thread) CloseHandle(t->host_thread);
++        if (t->finish_event) CloseHandle(t->finish_event);
++        t->host_thread = NULL;
++        t->finish_event = NULL;
++#else
++        pthread_detach(t->host_thread);
++        pthread_mutex_destroy(&t->finish_mutex);
++        pthread_cond_destroy(&t->finish_cond);
++#endif
++        { static int nlog = 0; if (PS3_LOG_FIRST(nlog, 8))
++            fprintf(stderr, "[SYS] thread table full: reclaimed the slot of tid %d (%s), finished and never joined\n", i + 1, t->name); }
++        stack_recycle(t);
++        t->state = PPU_THREAD_STATE_FREE;
++        return i;
++    }
++    return -1;
++}
++
+ static int find_free_slot(void)
+ {
+     static int s_next = 0;
+@@ -95,7 +167,9 @@ static int find_free_slot(void)
+             return i;
+         }
+     }
+-    return -1;
++    int i = reap_finished_slot(s_next);
++    if (i >= 0) s_next = (i + 1) % PPU_THREAD_MAX;
++    return i;
+ }
+ 
+ /* Find thread by ID. The ID is the index + 1 (0 is invalid). */
+@@ -197,6 +271,7 @@ static void* ppu_host_thread_proc(void* param)
+     { extern void ppu_resv_register(ppu_context*); ppu_resv_register(&info->ctx); }
+     ps3_tprof_thread('P', (uint32_t)info->ctx.thread_id);
+ 
++    { thr_ev_t* e = thr_find((uint32_t)info->ctx.thread_id); if (e) e->t_start = (uint32_t)GetTickCount64(); }
+     fprintf(stderr, "[THREAD %llu] host thread started, entry=0x%08llX hosttid=%lu\n",
+             (unsigned long long)info->ctx.thread_id,
+             (unsigned long long)info->entry_addr, (unsigned long)GetCurrentThreadId());
+@@ -210,6 +285,7 @@ static void* ppu_host_thread_proc(void* param)
+             fprintf(stderr, "[THREAD %llu] unwound out of sys_ppu_thread_exit\n",
+                     (unsigned long long)info->ctx.thread_id);
+         s_exit_armed = 0;
++        { thr_ev_t* e = thr_find((uint32_t)info->ctx.thread_id); if (e) e->t_exit = (uint32_t)GetTickCount64(); }
+         fprintf(stderr, "[THREAD %llu] entry RETURNED (r3=0x%llX) -- thread finished\n",
+                 (unsigned long long)info->ctx.thread_id,
+                 (unsigned long long)info->ctx.gpr[3]);
+@@ -435,7 +511,12 @@ int64_t sys_ppu_thread_create(ppu_context* ctx)
+ 
+     int slot = find_free_slot();
+     if (slot < 0) {
++        int st[8] = {0};
++        for (int k = 0; k < PPU_THREAD_MAX; k++) { int s = (int)g_ppu_threads[k].state; if (s >= 0 && s < 8) st[s]++; }
+         table_unlock();
++        { static int n = 0; if (PS3_LOG_FIRST(n, 20))
++            fprintf(stderr, "[SYS] sys_ppu_thread_create FAILED: no free thread slot (states 0..4: %d %d %d %d %d) entry=0x%llX flags=0x%llX\n",
++                    st[0], st[1], st[2], st[3], st[4], (unsigned long long)entry, (unsigned long long)flags); }
+         return (int64_t)(int32_t)CELL_EAGAIN;
+     }
+ 
+@@ -443,9 +524,13 @@ int64_t sys_ppu_thread_create(ppu_context* ctx)
+     memset(t, 0, sizeof(*t));
+ 
+     /* Allocate guest stack */
+-    uint32_t stack_addr = vm_stack_allocate(&g_vm_stack_alloc, stack_size);
++    uint32_t stack_addr = stack_take(stack_size);
++    if (!stack_addr) stack_addr = vm_stack_allocate(&g_vm_stack_alloc, stack_size);
+     if (stack_addr == 0) {
+         table_unlock();
++        { static int n = 0; if (PS3_LOG_FIRST(n, 20))
++            fprintf(stderr, "[SYS] sys_ppu_thread_create FAILED: no guest stack of 0x%X bytes entry=0x%llX\n",
++                    stack_size, (unsigned long long)entry); }
+         return (int64_t)(int32_t)CELL_ENOMEM;
+     }
+ 
+@@ -505,6 +590,9 @@ int64_t sys_ppu_thread_create(ppu_context* ctx)
+         *out = be_id;
+     }
+ 
++    { long i = InterlockedIncrement(&s_thr_n) - 1; thr_ev_t* e = &s_thr_ring[i % THR_RING];
++      memset(e, 0, sizeof *e); e->tid = (uint32_t)thread_id; e->arg = (uint32_t)arg;
++      e->t_create = (uint32_t)GetTickCount64(); snprintf(e->name, sizeof e->name, "%s", t->name); }
+     fprintf(stderr, "[SYS] sys_ppu_thread_create tid=%llu name=\"%s\" entry=0x%08llX arg=0x%llX stack=0x%X prio=%d flags=0x%llX\n",
+             (unsigned long long)thread_id, t->name, (unsigned long long)entry, (unsigned long long)arg,
+             stack_size, priority, (unsigned long long)flags);
+@@ -734,6 +822,7 @@ int64_t sys_ppu_thread_join(ppu_context* ctx)
+     pthread_mutex_destroy(&t->finish_mutex);
+     pthread_cond_destroy(&t->finish_cond);
+ #endif
++    stack_recycle(t);
+     t->state = PPU_THREAD_STATE_FREE;
+     table_unlock();
+ 
+@@ -1425,3 +1514,39 @@ void sys_ppu_thread_init(lv2_syscall_table* tbl)
+     lv2_syscall_register(tbl, SYS_PPU_THREAD_GET_STACK_INFORMATION, sys_ppu_thread_get_stack_information);
+     lv2_syscall_register(tbl, SYS_PPU_THREAD_RENAME,              sys_ppu_thread_rename);
+ }
++
++/* The hang watchdog's view of the threads the guest made last. The fields are the
++ * guest thread object's (Sonic's Thread: running flag +0x80, "sync" flag +0x99,
++ * start semaphore +0x30, done semaphore +0x58). */
++void sys_ppu_thread_census(void)
++{
++    long n = s_thr_n;
++    uint32_t now = (uint32_t)GetTickCount64();
++    { int st[8] = {0};
++      for (int k = 0; k < PPU_THREAD_MAX; k++) { int s = (int)g_ppu_threads[k].state; if (s >= 0 && s < 8) st[s]++; }
++      fprintf(stderr, "[THREADCENSUS] thread slots by state 0..4: %d %d %d %d %d\n", st[0], st[1], st[2], st[3], st[4]); }
++    { /* finished threads nobody joined, by name: they keep their slot until joined */
++      char nm[16][40]; int cnt[16] = {0}; int nn = 0;
++      for (int k = 0; k < PPU_THREAD_MAX; k++) {
++          if (g_ppu_threads[k].state != PPU_THREAD_STATE_FINISHED) continue;
++          int f = -1;
++          for (int j = 0; j < nn; j++) if (!strcmp(nm[j], g_ppu_threads[k].name)) { f = j; break; }
++          if (f < 0 && nn < 16) { f = nn++; snprintf(nm[f], sizeof nm[f], "%s", g_ppu_threads[k].name); }
++          if (f >= 0) cnt[f]++;
++      }
++      for (int j = 0; j < nn; j++) fprintf(stderr, "[THREADCENSUS] finished, not joined: %d x %s\n", cnt[j], nm[j]); }
++    fprintf(stderr, "[THREADCENSUS] the last guest threads (now t=%u):\n", now);
++    for (long i = n > 12 ? n - 12 : 0; i < n; i++) {
++        const thr_ev_t* e = &s_thr_ring[i % THR_RING];
++        uint8_t* o = e->arg ? (uint8_t*)vm_to_host(e->arg) : NULL;
++        uint32_t w[16] = {0};
++        if (o) for (int k = 0; k < 16; k++) { memcpy(&w[k], o + 0x28 + 4 * k, 4); w[k] = _byteswap_ulong(w[k]); }
++        fprintf(stderr, "[THREADCENSUS]   tid=%u %s obj=0x%08X created=%u started=%u exited=%u"
++                        " | run=%u sync=%u flag98=%u words@+28:",
++                e->tid, e->name, e->arg, e->t_create, e->t_start, e->t_exit,
++                o ? o[0x80] : 0, o ? o[0x99] : 0, o ? o[0x98] : 0);
++        for (int k = 0; k < 16; k++) fprintf(stderr, " %X", w[k]);
++        fprintf(stderr, "\n");
++    }
++    fflush(stderr);
++}
+diff --git a/runtime/syscalls/sys_semaphore.c b/runtime/syscalls/sys_semaphore.c
+index 8b976c05..67beb7cd 100644
+--- a/runtime/syscalls/sys_semaphore.c
++++ b/runtime/syscalls/sys_semaphore.c
+@@ -66,6 +66,105 @@ static uint32_t read_be32(uint32_t addr)
+     return v;
+ }
+ 
++/* sys_semaphore_census: the semaphore each guest thread is blocked on, by
++ * guest thread id; 0 while it is not in sys_semaphore_wait. */
++#define SEM_CENSUS_TIDS 1024
++static volatile uint32_t s_sem_blocked_on[SEM_CENSUS_TIDS];
++
++/* The caller one frame up: a leaf wrapper around the syscall (Sonic's lock
++ * at 0x1283990 is one) saves its own lr in the caller's frame at r1+0x10, so
++ * the low word of that doubleword names who actually wanted the token. */
++static uint32_t sem_caller(const ppu_context* ctx)
++{
++    uint32_t sp = (uint32_t)ctx->gpr[1];
++    return sp ? read_be32(sp + 0x14) : 0;
++}
++
++/* The last SEM_RING operations on any semaphore, newest overwriting oldest: the
++ * census prints the ones on the semaphores the guest is blocked on, so a wait
++ * that nobody ever posts can be traced to a post that went to another id, or
++ * to a semaphore destroyed and made again under the same id. */
++#define SEM_RING 8192
++typedef struct { uint32_t ms, tid, id, lr, caller; int32_t val, r; char op; } sem_ev_t;
++static sem_ev_t s_sem_ring[SEM_RING];
++static volatile LONG s_sem_ring_n;
++
++static void sem_ev(char op, uint32_t id, const ppu_context* ctx, int32_t val, int32_t r)
++{
++    LONG i = InterlockedIncrement(&s_sem_ring_n) - 1;
++    sem_ev_t* e = &s_sem_ring[(uint32_t)i % SEM_RING];
++    e->ms = (uint32_t)GetTickCount64(); e->tid = (uint32_t)ctx->thread_id; e->id = id;
++    e->lr = (uint32_t)ctx->lr; e->caller = sem_caller(ctx); e->val = val; e->r = r; e->op = op;
++}
++
++static void sem_ring_print(uint32_t id)
++{
++    LONG n = s_sem_ring_n;
++    LONG from = n > SEM_RING ? n - SEM_RING : 0;
++    int shown = 0;
++    /* the last 30 on this id, oldest first */
++    int cnt = 0;
++    for (LONG i = n - 1; i >= from && cnt < 30; i--)
++        if (s_sem_ring[(uint32_t)i % SEM_RING].id == id) cnt++;
++    LONG start = n - 1; int skip = cnt;
++    for (LONG i = n - 1; i >= from && skip > 0; i--)
++        if (s_sem_ring[(uint32_t)i % SEM_RING].id == id) { start = i; skip--; }
++    for (LONG i = start; i < n; i++) {
++        const sem_ev_t* e = &s_sem_ring[(uint32_t)i % SEM_RING];
++        if (e->id != id) continue;
++        fprintf(stderr, "[SEMCENSUS]     sem %u: t=%u tid=%u %c val=%d r=%d lr=0x%08X caller=0x%08X\n",
++                id, e->ms, e->tid, e->op, e->val, e->r, e->lr, e->caller);
++        shown++;
++    }
++    fprintf(stderr, "[SEMCENSUS]     (%d events on sem %u, now t=%u)\n", shown, id, (uint32_t)GetTickCount64());
++}
++
++static void sem_note_take(sys_semaphore_info* s, const ppu_context* ctx)
++{
++    s->take_tid    = (uint32_t)ctx->thread_id;
++    s->take_lr     = (uint32_t)ctx->lr;
++    s->take_caller = sem_caller(ctx);
++}
++
++static void sem_note_post(sys_semaphore_info* s, const ppu_context* ctx)
++{
++    s->post_tid    = (uint32_t)ctx->thread_id;
++    s->post_lr     = (uint32_t)ctx->lr;
++    s->post_caller = sem_caller(ctx);
++}
++
++void sys_semaphore_census(void)
++{
++    int any = 0;
++    for (uint32_t t = 0; t < SEM_CENSUS_TIDS; t++) {
++        uint32_t id = s_sem_blocked_on[t];
++        if (!id) continue;
++        if (!any) fprintf(stderr, "[SEMCENSUS] guest threads blocked in sys_semaphore_wait:\n");
++        any = 1;
++        fprintf(stderr, "[SEMCENSUS]   guest-tid %-3u waits on sem %u\n", t, id);
++    }
++    if (!any) {
++        fprintf(stderr, "[SEMCENSUS] no guest thread is blocked in sys_semaphore_wait\n");
++        return;
++    }
++    for (uint32_t id = 1; id <= SYS_SEMAPHORE_MAX; id++) {
++        int waited = 0;
++        for (uint32_t t = 0; t < SEM_CENSUS_TIDS && !waited; t++)
++            if (s_sem_blocked_on[t] == id) waited = 1;
++        if (!waited) continue;
++        const sys_semaphore_info* s = &g_sys_semaphores[id - 1];
++        fprintf(stderr, "[SEMCENSUS]   sem %u '%.8s' value=%d max=%d waiters=%d"
++                        " | last take: tid %u lr=0x%08X caller=0x%08X"
++                        " | last post: tid %u lr=0x%08X caller=0x%08X\n",
++                id, s->name, s->value, s->max_value, s->waiters,
++                s->take_tid, s->take_lr, s->take_caller,
++                s->post_tid, s->post_lr, s->post_caller);
++        sem_ring_print(id);
++    }
++    { extern void sys_ppu_thread_census(void); sys_ppu_thread_census(); }
++    fflush(stderr);
++}
++
+ /* ---------------------------------------------------------------------------
+  * lbp_hang_census (diagnostic; called from the hang watchdog)
+  *
+@@ -273,6 +372,7 @@ int64_t sys_semaphore_create(ppu_context* ctx)
+     if (id_out_addr != 0) {
+         write_be32(id_out_addr, sem_id);
+     }
++    sem_ev('C', sem_id, ctx, initial, max_val);
+ 
+     /* Identify every semaphore at birth: name + creator's guest LR. The
+      * LBP movie stall was a 2369-waits/0-posts semaphore whose OWNER took
+@@ -315,6 +415,7 @@ int64_t sys_semaphore_destroy(ppu_context* ctx)
+ #endif
+ 
+     s->active = 0;
++    sem_ev('D', sem_id, ctx, s->value, s->waiters);
+     sem_table_unlock();
+     return CELL_OK;
+ }
+@@ -339,7 +440,13 @@ void* ppu_gcm_wait_pump_absent(void (**pump)(void)) { *pump = NULL; return NULL;
+ int64_t sys_semaphore_wait(ppu_context* ctx)
+ {
+     ppu_thread_note_block(ctx->thread_id);   /* PS3_PRIO_START */
++    const uint64_t tid = ctx->thread_id;
++    const uint32_t wid = (uint32_t)ctx->gpr[3];
++    if (tid < SEM_CENSUS_TIDS) s_sem_blocked_on[tid] = wid;
++    sem_ev('W', wid, ctx, 0, 0);
+     int64_t r = sys_semaphore_wait_impl(ctx);
++    sem_ev('E', wid, ctx, 0, (int32_t)r);
++    if (tid < SEM_CENSUS_TIDS) s_sem_blocked_on[tid] = 0;
+     static int d = -1; if (d < 0) d = getenv("SEM_ERRDBG") ? 1 : 0;
+     if (d && r) { static int n = 0; if (PS3_LOG_FIRST(n, 12))
+         fprintf(stderr, "[sem] wait(sem=%u) -> %lld%c",
+@@ -401,6 +508,7 @@ static int64_t sys_semaphore_wait_impl(ppu_context* ctx)
+         EnterCriticalSection(&s->value_lock);
+         if (s->value > 0) {
+             s->value--;
++            sem_note_take(s, ctx);
+             LeaveCriticalSection(&s->value_lock);
+             return CELL_OK;
+         }
+@@ -458,6 +566,7 @@ static int64_t sys_semaphore_wait_impl(ppu_context* ctx)
+     }
+ 
+     s->value--;
++    sem_note_take(s, ctx);
+     pthread_mutex_unlock(&s->mtx);
+ #endif
+ 
+@@ -499,6 +608,7 @@ int64_t sys_semaphore_trywait(ppu_context* ctx)
+         return (int64_t)(int32_t)CELL_EBUSY;
+     }
+     s->value--;
++    sem_note_take(s, ctx);
+     LeaveCriticalSection(&s->value_lock);
+ #else
+     pthread_mutex_lock(&s->mtx);
+@@ -507,6 +617,7 @@ int64_t sys_semaphore_trywait(ppu_context* ctx)
+         return (int64_t)(int32_t)CELL_EBUSY;
+     }
+     s->value--;
++    sem_note_take(s, ctx);
+     pthread_mutex_unlock(&s->mtx);
+ #endif
+ 
+@@ -519,7 +630,15 @@ int64_t sys_semaphore_trywait(ppu_context* ctx)
+  * r3 = sem_id
+  * r4 = count (number to post)
+  * -----------------------------------------------------------------------*/
++static int64_t sys_semaphore_post_impl(ppu_context* ctx);
+ int64_t sys_semaphore_post(ppu_context* ctx)
++{
++    const uint32_t pid = (uint32_t)ctx->gpr[3];
++    int64_t r = sys_semaphore_post_impl(ctx);
++    sem_ev('P', pid, ctx, (int32_t)ctx->gpr[4], (int32_t)r);
++    return r;
++}
++static int64_t sys_semaphore_post_impl(ppu_context* ctx)
+ {
+     uint32_t sem_id = LV2_ARG_U32(ctx, 0);
+     int32_t  count  = LV2_ARG_S32(ctx, 1);
+@@ -567,6 +686,7 @@ int64_t sys_semaphore_post(ppu_context* ctx)
+         return (int64_t)(int32_t)CELL_EBUSY;
+     }
+     s->value += count;
++    sem_note_post(s, ctx);
+     /* Wake channel: release exactly enough tokens to cover the parked waiters
+      * this post can satisfy (min(count, waiters)). Woken waiters re-check
+      * value under the lock; an orphaned token (waiter already left) is benign.
+@@ -583,6 +703,7 @@ int64_t sys_semaphore_post(ppu_context* ctx)
+         return (int64_t)(int32_t)CELL_EBUSY;
+     }
+     s->value += count;
++    sem_note_post(s, ctx);
+     /* Wake the waiters this post can satisfy (broadcast is also correct — they
+      * re-check value — but min(count,waiters) signals is precise). */
+     { int wake = (count < s->waiters) ? count : s->waiters;
+diff --git a/runtime/syscalls/sys_semaphore.h b/runtime/syscalls/sys_semaphore.h
+index 38f7b65e..19f80c8a 100644
+--- a/runtime/syscalls/sys_semaphore.h
++++ b/runtime/syscalls/sys_semaphore.h
+@@ -35,6 +35,13 @@ typedef struct sys_semaphore_info {
+     int32_t  max_value;
+     int32_t  waiters;    /* threads currently parked in wait() */
+ 
++    /* Who last took a token and who last posted one: the guest thread, the
++     * syscall's lr and the caller a frame up (the word a leaf wrapper saves at
++     * r1+0x10). For a semaphore used as a lock, the last taker of a token that
++     * was not posted back is the holder. Read by sys_semaphore_census. */
++    uint32_t take_tid, take_lr, take_caller;
++    uint32_t post_tid, post_lr, post_caller;
++
+ #ifdef _WIN32
+     HANDLE   sem_handle;
+     CRITICAL_SECTION value_lock;  /* protects value for get_value/post */
+@@ -58,6 +65,10 @@ int64_t sys_semaphore_get_value(ppu_context* ctx);
+ /* Registration */
+ void sys_semaphore_init(lv2_syscall_table* tbl);
+ 
++/* The hang watchdog's view: every guest thread blocked in sys_semaphore_wait,
++ * and each semaphore they wait on with its count and last taker and poster. */
++void sys_semaphore_census(void);
++
+ #ifdef __cplusplus
+ }
+ #endif
