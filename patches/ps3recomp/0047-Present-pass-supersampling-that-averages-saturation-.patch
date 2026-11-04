@@ -1,0 +1,223 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: DrummingBird1 <1979036+DrummingBird1@users.noreply.github.com>
+Date: Wed, 4 Nov 2026 08:12:21 +0200
+Subject: [PATCH] Present pass: supersampling that averages, saturation and
+ contrast with a dither, a present-wait log
+
+A guest frame larger than the window was sampled with one bilinear tap per
+window pixel, which reads 4 of the ~7x7 texels under it at x4 in a 1080p
+window; now the taps cover the pixel's whole footprint (nearest keeps its
+point sample). On a town frame drawn at 5120x2880 and shown at 960x540 the
+window went from MAE 4.54 to 1.05 against the same frame box-filtered.
+D3D12_SATURATION and D3D12_CONTRAST change the colours, with a one-step
+triangular dither whenever a colour curve is on. D3D12_LATENCY_LOG prints how
+long Present held a frame; it was 0.4 ms, also with a waitable swap chain of
+one frame, so there is no low-latency mode.
+---
+ libs/video/rsx_d3d12_backend.c | 102 +++++++++++++++++++++++++++++----
+ 1 file changed, 90 insertions(+), 12 deletions(-)
+
+diff --git a/libs/video/rsx_d3d12_backend.c b/libs/video/rsx_d3d12_backend.c
+index db1b97b7..66033b6f 100644
+--- a/libs/video/rsx_d3d12_backend.c
++++ b/libs/video/rsx_d3d12_backend.c
+@@ -703,7 +703,15 @@ static u32    s_lock_n  = 0;
+  *   D3D12_AA=fxaa                                 FXAA on the guest frame, with smooth scaling
+  *   D3D12_SHARPEN=0..1                            contrast-adaptive, after AMD's CAS
+  *   D3D12_BRIGHTNESS=0.5..1.5                     a gamma curve, so nothing clips
++ *   D3D12_SATURATION=0..2, D3D12_CONTRAST=0.5..1.5   1 = the game's own colours
+  *   D3D12_RES_SCALE=1..4                          internal resolution (see s_rs)
++ *   D3D12_LATENCY_LOG=1                           how long a frame is held at the present, every 5 s
++ *
++ * A guest frame larger than the window (an internal resolution above it) is
++ * averaged over each window pixel's whole footprint: one bilinear tap read
++ * 4 of the ~7x7 texels under a pixel at x4 in a 1080p window. When the
++ * colours are changed, a dither of one 8-bit step keeps gradients from
++ * turning into bands.
+  * -------------------------------------------------------------------------*/
+ static struct {
+     int on, read;
+@@ -714,7 +722,7 @@ static struct {
+     volatile LONG want_w, want_h;      /* the client size WM_SIZE last reported */
+     ID3D12RootSignature* root;
+     ID3D12PipelineState* pso;
+-    float scaler, fxaa, sharpen, gamma;
++    float scaler, fxaa, sharpen, gamma, saturation, contrast;
+     int keep_aspect;
+ } s_pp;
+ 
+@@ -737,13 +745,19 @@ static void pp_read_env(void)
+     e = getenv("D3D12_BRIGHTNESS");
+     s_pp.gamma = e ? (float)atof(e) : 1.f;
+     if (!(s_pp.gamma >= 0.5f && s_pp.gamma <= 1.5f)) s_pp.gamma = 1.f;
++    e = getenv("D3D12_SATURATION");
++    s_pp.saturation = e ? (float)atof(e) : 1.f;
++    if (!(s_pp.saturation >= 0.f && s_pp.saturation <= 2.f)) s_pp.saturation = 1.f;
++    e = getenv("D3D12_CONTRAST");
++    s_pp.contrast = e ? (float)atof(e) : 1.f;
++    if (!(s_pp.contrast >= 0.5f && s_pp.contrast <= 1.5f)) s_pp.contrast = 1.f;
+     e = getenv("D3D12_RES_SCALE");
+     s_rs = e ? (float)atof(e) : 1.f;
+     if (!(s_rs >= 1.f && s_rs <= 4.f) || !s_pp.on) s_rs = 1.f;
+     printf("[D3D12] present pass %s: scaler %.0f aspect %s fxaa %.0f sharpen %.2f brightness %.2f"
+-           " internal resolution x%.2f\n",
++           " saturation %.2f contrast %.2f internal resolution x%.2f\n",
+            s_pp.on ? "on" : "off", s_pp.scaler, s_pp.keep_aspect ? "keep" : "stretch",
+-           s_pp.fxaa, s_pp.sharpen, s_pp.gamma, s_rs);
++           s_pp.fxaa, s_pp.sharpen, s_pp.gamma, s_pp.saturation, s_pp.contrast, s_rs);
+ }
+ 
+ /* D3D12_ESC=ignore: Escape no longer closes the window. A player who presses
+@@ -796,12 +810,25 @@ static const char s_pp_hlsl[] =
+     "Texture2D src : register(t0);\n"
+     "SamplerState pt : register(s0);\n"
+     "SamplerState li : register(s1);\n"
+-    "cbuffer P : register(b0) { float2 srcSize; float2 dstSize; float scaler; float fxaa; float sharpen; float gamma; };\n"
++    "cbuffer P : register(b0) { float2 srcSize; float2 dstSize; float scaler; float fxaa; float sharpen; float gamma;\n"
++    "                           float saturation; float contrast; float2 pad_; };\n"
+     "struct VO { float4 pos : SV_Position; float2 uv : TEXCOORD0; };\n"
+     "VO vs_main(uint id : SV_VertexID) {\n"
+     "  VO o; float2 p = float2((id << 1) & 2, id & 2);\n"
+     "  o.uv = p; o.pos = float4(p * float2(2, -2) + float2(-1, 1), 0, 1); return o; }\n"
+     "float3 bil(float2 uv) { return src.SampleLevel(li, uv, 0).rgb; }\n"
++    /* A frame larger than its rectangle (supersampling): the mean over the
++     * window pixel's footprint, from bilinear taps at most a texel apart, so
++     * every texel under it counts. Nearest keeps its point sample. */
++    "bool down() { return (scaler < 0.5 || scaler > 1.5) && any(srcSize > dstSize * 1.01); }\n"
++    "float3 box(float2 uv) {\n"
++    "  float2 r = srcSize / dstSize;\n"
++    "  int2 n = (int2)clamp(ceil(r), 1.0, 8.0);\n"
++    "  float2 st = r / (float2)n / srcSize, o = uv - st * ((float2)n - 1.0) * 0.5;\n"
++    "  float3 s = 0;\n"
++    "  [loop] for (int y = 0; y < n.y; y++) [loop] for (int x = 0; x < n.x; x++) s += bil(o + st * float2(x, y));\n"
++    "  return s / (float)(n.x * n.y); }\n"
++    "float3 tap(float2 uv) { return down() ? box(uv) : bil(uv); }\n"
+     /* Sharp bilinear: as if scaled up by whole pixels first, then smoothed. */
+     "float3 sharpbil(float2 uv) {\n"
+     "  float2 k = max(floor(dstSize / srcSize), 1.0);\n"
+@@ -835,7 +862,9 @@ static const char s_pp_hlsl[] =
+     "  float3 b = a * 0.5 + 0.25 * (bil(uv - dir * 0.5) + bil(uv + dir * 0.5));\n"
+     "  float lb = luma(b);\n"
+     "  return (lb < lmin || lb > lmax) ? a : b; }\n"
++    /* Supersampling already smooths the edges, so it takes FXAA's place. */
+     "float3 base(float2 uv) {\n"
++    "  if (down()) return box(uv);\n"
+     "  if (fxaa > 0.5) return fxaa_px(uv);\n"
+     "  if (scaler > 2.5) return bicubic(uv);\n"
+     "  if (scaler > 1.5) return sharpbil(uv);\n"
+@@ -846,14 +875,25 @@ static const char s_pp_hlsl[] =
+     "  if (sharpen > 0.0) {\n"
+     /* Contrast-adaptive sharpening (after AMD's CAS): less where the
+      * neighbourhood is already near black or white, so edges do not ring. */
+-    "    float2 px = 1.0 / srcSize;\n"
+-    "    float3 n = bil(i.uv + float2(0, -px.y)), s = bil(i.uv + float2(0, px.y));\n"
+-    "    float3 e = bil(i.uv + float2(px.x, 0)), w = bil(i.uv + float2(-px.x, 0));\n"
++    /* The neighbours are a source texel away, or a window pixel away when
++     * the frame is larger than the window. */
++    "    float2 px = 1.0 / min(srcSize, dstSize);\n"
++    "    float3 n = tap(i.uv + float2(0, -px.y)), s = tap(i.uv + float2(0, px.y));\n"
++    "    float3 e = tap(i.uv + float2(px.x, 0)), w = tap(i.uv + float2(-px.x, 0));\n"
+     "    float3 mn = min(c, min(min(n, s), min(e, w))), mx = max(c, max(max(n, s), max(e, w)));\n"
+     "    float3 amp = sqrt(saturate(min(mn, 1.0 - mx) / max(mx, 1e-5)));\n"
+     "    float3 wgt = amp * (-1.0 / lerp(8.0, 5.0, sharpen));\n"
+     "    c = saturate((c + (n + s + e + w) * wgt) / (1.0 + 4.0 * wgt)); }\n"
+     "  if (gamma != 1.0) c = pow(saturate(c), 1.0 / gamma);\n"
++    "  if (contrast != 1.0) c = saturate((c - 0.5) * contrast + 0.5);\n"
++    "  if (saturation != 1.0) { float l = luma(c); c = saturate(l + (c - l) * saturation); }\n"
++    /* A triangular dither of one 8-bit step, from two interleaved-gradient
++     * noises: a curve on 8-bit colours otherwise leaves steps in gradients. */
++    "  if (gamma != 1.0 || contrast != 1.0 || saturation != 1.0) {\n"
++    "    float2 p = i.pos.xy;\n"
++    "    float a = frac(52.9829189 * frac(dot(p, float2(0.06711056, 0.00583715))));\n"
++    "    float b = frac(52.9829189 * frac(dot(p + float2(47.0, 17.0), float2(0.06711056, 0.00583715))));\n"
++    "    c = saturate(c + (a + b - 1.0) / 255.0); }\n"
+     "  return float4(c, 1); }\n";
+ 
+ /* The swap chain's buffers and their RTVs, after creation or a resize. */
+@@ -896,13 +936,13 @@ static int pp_init(void)
+         sh.ptr += s_pp.srv_inc;
+     }
+ 
+-    /* 8 constants (b0), one SRV (t0), point and linear clamp samplers. */
++    /* 12 constants (b0), one SRV (t0), point and linear clamp samplers. */
+     D3D12_DESCRIPTOR_RANGE range = {0};
+     range.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+     range.NumDescriptors = 1;
+     D3D12_ROOT_PARAMETER rp[2] = {0};
+     rp[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+-    rp[0].Constants.Num32BitValues = 8;
++    rp[0].Constants.Num32BitValues = 12;
+     rp[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+     rp[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+     rp[1].DescriptorTable.NumDescriptorRanges = 1;
+@@ -5482,9 +5522,10 @@ static void present_pass(u32 fi)
+     cl->lpVtbl->SetGraphicsRootSignature(cl, s_pp.root);
+     cl->lpVtbl->SetPipelineState(cl, s_pp.pso);
+     cl->lpVtbl->SetDescriptorHeaps(cl, 1, &s_pp.srv_heap);
+-    const float k[8] = { (float)rs_px(s_d3d.width), (float)rs_px(s_d3d.height), dw, dh,
+-                         s_pp.scaler, s_pp.fxaa, s_pp.sharpen, s_pp.gamma };
+-    cl->lpVtbl->SetGraphicsRoot32BitConstants(cl, 0, 8, k, 0);
++    const float k[12] = { (float)rs_px(s_d3d.width), (float)rs_px(s_d3d.height), dw, dh,
++                          s_pp.scaler, s_pp.fxaa, s_pp.sharpen, s_pp.gamma,
++                          s_pp.saturation, s_pp.contrast, 0.f, 0.f };
++    cl->lpVtbl->SetGraphicsRoot32BitConstants(cl, 0, 12, k, 0);
+     D3D12_GPU_DESCRIPTOR_HANDLE srv;
+     s_pp.srv_heap->lpVtbl->GetGPUDescriptorHandleForHeapStart(s_pp.srv_heap, &srv);
+     srv.ptr += (UINT64)fi * s_pp.srv_inc;
+@@ -5499,6 +5540,37 @@ static void present_pass(u32 fi)
+     cl->lpVtbl->ResourceBarrier(cl, 2, b);
+ }
+ 
++/* D3D12_LATENCY_LOG=1: how long each finished frame was held at Present, which
++ * blocks while the display's queue is full, every 5 s. On a 60 Hz display it
++ * was 0.4 ms in a menu and in the town: the GPU is drained every frame and the
++ * game presents at the display's rate, so nothing waits in front of it, and a
++ * waitable swap chain with one frame of latency changed nothing (0.4 ms too),
++ * so there is no such mode. DXGI's frame statistics could not tell more: their
++ * present count did not follow GetLastPresentCount here (the gap drifted
++ * between 8 and 24), so a present could not be matched to its vblank. */
++static int latency_log_on(void)
++{
++    static int on = -1;
++    if (on < 0) { const char* e = getenv("D3D12_LATENCY_LOG"); on = e && *e == '1'; }
++    return on;
++}
++
++static void latency_note(double ms)
++{
++    static double sum, mx;
++    static unsigned n;
++    static ULONGLONG t0;
++    sum += ms; n++;
++    if (ms > mx) mx = ms;
++    const ULONGLONG t = GetTickCount64();
++    if (!t0) t0 = t;
++    if (t - t0 >= 5000) {
++        printf("[D3D12] latency: held at the present %.1f ms mean, %.1f max (%u frames)\n", sum / n, mx, n);
++        fflush(stdout);
++        sum = mx = 0.0; n = 0; t0 = t;
++    }
++}
++
+ static void render_frame(void)
+ {
+     double _rf0 = perf_on() ? perf_now() : 0.0;
+@@ -7033,12 +7105,18 @@ skip_dump_consider: ;
+     double _p0 = perf_on() ? perf_now() : 0.0;
+     if (s_present_this_frame) {
+         const uint64_t ft_p0 = PS3_FT_ON() ? ps3_ft_now() : 0;
++        LARGE_INTEGER q0 = {0}, q1, qf;
++        if (latency_log_on()) QueryPerformanceCounter(&q0);
+         if (!d3d12_vsync_off())
+             s_d3d.swap_chain->lpVtbl->Present(s_d3d.swap_chain, 1, 0);
+         else
+             s_d3d.swap_chain->lpVtbl->Present(s_d3d.swap_chain, 0,
+                                               s_d3d.tearing ? DXGI_PRESENT_ALLOW_TEARING : 0);
+         if (ft_p0) ps3_ft_span(PS3_FT_PRESENT, 0, 0, 0, ft_p0, ps3_ft_now());
++        if (q0.QuadPart) {
++            QueryPerformanceCounter(&q1); QueryPerformanceFrequency(&qf);
++            latency_note((double)(q1.QuadPart - q0.QuadPart) * 1000.0 / (double)qf.QuadPart);
++        }
+     }
+     rdoc_frame_end();
+ 

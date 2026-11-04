@@ -412,6 +412,22 @@
                                     <TextBlock Grid.Column="2" Text="{Binding Settings.Brightness, StringFormat={}{0}%}" VerticalAlignment="Center"
                                                HorizontalAlignment="Right" FlowDirection="LeftToRight"/>
                                 </Grid>
+                                <Grid Style="{StaticResource Row}">
+                                    <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="240"/><ColumnDefinition Width="52"/></Grid.ColumnDefinitions>
+                                    <TextBlock Text="{l:T gfx_saturation}" VerticalAlignment="Center"/>
+                                    <Slider Grid.Column="1" Minimum="0" Maximum="200" TickFrequency="5" IsSnapToTickEnabled="True"
+                                            Value="{Binding Settings.Saturation}" VerticalAlignment="Center"/>
+                                    <TextBlock Grid.Column="2" Text="{Binding Settings.Saturation, StringFormat={}{0}%}" VerticalAlignment="Center"
+                                               HorizontalAlignment="Right" FlowDirection="LeftToRight"/>
+                                </Grid>
+                                <Grid Style="{StaticResource Row}">
+                                    <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="240"/><ColumnDefinition Width="52"/></Grid.ColumnDefinitions>
+                                    <TextBlock Text="{l:T gfx_contrast}" VerticalAlignment="Center"/>
+                                    <Slider Grid.Column="1" Minimum="50" Maximum="150" TickFrequency="5" IsSnapToTickEnabled="True"
+                                            Value="{Binding Settings.Contrast}" VerticalAlignment="Center"/>
+                                    <TextBlock Grid.Column="2" Text="{Binding Settings.Contrast, StringFormat={}{0}%}" VerticalAlignment="Center"
+                                               HorizontalAlignment="Right" FlowDirection="LeftToRight"/>
+                                </Grid>
                             </StackPanel>
                         </Border>
                     </StackPanel>
