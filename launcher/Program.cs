@@ -70,7 +70,9 @@ namespace Sonic06Launcher
                     if (!Directory.Exists(Path.Combine(Workspace.Disc, "PS3_GAME"))) s.FromIso(args[1]).GetAwaiter().GetResult();
                     if (!File.Exists(Workspace.EbootElf)) s.Decrypt().GetAwaiter().GetResult();
                     if (s.FfmpegBin() == null || s.FfmpegInclude() == null) s.DownloadFfmpeg().GetAwaiter().GetResult();
-                    if (!File.Exists(Workspace.GameExe)) s.Build().GetAwaiter().GetResult();
+                    var sdl = !s.HasSdl2;
+                    if (sdl) s.DownloadSdl2().GetAwaiter().GetResult();
+                    if (sdl || !File.Exists(Workspace.GameExe)) s.Build().GetAwaiter().GetResult();
                     log("SETUP OK");
                 });
             }

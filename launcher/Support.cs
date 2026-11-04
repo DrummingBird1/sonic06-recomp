@@ -37,6 +37,7 @@ namespace Sonic06Launcher
                 return;
             }
             // New patches or a new lifter change the translated code, so all of it is redone.
+            if (!setup.HasSdl2) await setup.DownloadSdl2();
             await setup.Build(resetToolkit: true);
         }
 

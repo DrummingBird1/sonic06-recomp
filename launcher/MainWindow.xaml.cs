@@ -117,8 +117,13 @@ namespace Sonic06Launcher
             Loc.I.Set(cfg.Str("uiLanguage", Loc.SystemDefault()));
             setup = new Setup(cfg, Log, Progress);
             Settings = GameSettings.Load(cfg);
-            Settings.PropertyChanged += (s, e) => { if (e.PropertyName == nameof(GameSettings.Fullscreen)) N(nameof(WindowSizeEnabled)); };
-            Loc.I.PropertyChanged += (s, e) => { RefreshStatus(); N(nameof(PlayLabel)); N(nameof(VersionText)); N(nameof(UiLanguage));
+            Settings.PropertyChanged += (s, e) =>
+            {
+                if (e.PropertyName == nameof(GameSettings.Fullscreen)) N(nameof(WindowSizeEnabled));
+                if (e.PropertyName == "Keys") RefreshKeyRows();
+            };
+            for (var i = 0; i < GameSettings.Controls.Length; i++) KeyRows.Add(new KeyRow(this, i));
+            Loc.I.PropertyChanged += (s, e) => { RefreshStatus(); N(nameof(PlayLabel)); N(nameof(VersionText)); N(nameof(UiLanguage)); RefreshKeyRows();
                                            N(nameof(HeroFade)); N(nameof(HeroCols)); N(nameof(HeroColumn)); };
             InitializeComponent();
             DataContext = this;
@@ -195,7 +200,11 @@ namespace Sonic06Launcher
             if (!Directory.Exists(Path.Combine(Workspace.Disc, "PS3_GAME"))) plan.Add(Loc.I["plan_disc"]);
             if (needElf) plan.Add(Loc.I["plan_decrypt"]);
             if (setup.FfmpegBin() == null || setup.FfmpegInclude() == null) plan.Add(Loc.I["plan_ffmpeg"]);
-            if (!File.Exists(Workspace.GameExe)) plan.Add(Loc.I.F("plan_build", Tools.BuildJobs()));
+            // SDL2 changes the exe, so a build that is already there is built again (only the runtime).
+            var needSdl = !setup.HasSdl2;
+            if (needSdl) plan.Add(Loc.I["plan_sdl2"]);
+            var needBuild = needSdl || !File.Exists(Workspace.GameExe);
+            if (needBuild) plan.Add(Loc.I.F("plan_build", Tools.BuildJobs()));
             if (plan.Count == 0) { Log(Loc.I["msg_allset"]); return; }
             if (!Dialog.Show(this, Loc.I["setup_all"], Loc.I["dlg_plan"] + "\n\n• " + string.Join("\n• ", plan) + "\n\n" + Loc.I["dlg_continue"], true))
                 return;
@@ -212,7 +221,8 @@ namespace Sonic06Launcher
                 await setup.Decrypt();
             }
             if (setup.FfmpegBin() == null || setup.FfmpegInclude() == null) await setup.DownloadFfmpeg();
-            if (!File.Exists(Workspace.GameExe)) await setup.Build();
+            if (needSdl) await setup.DownloadSdl2();
+            if (needBuild) await setup.Build();
             Log(Loc.I["msg_setup_done"]);
         });
 
@@ -280,6 +290,108 @@ namespace Sonic06Launcher
 
         void OnPreset(object s, RoutedEventArgs e) => Settings.Preset((string)((Button)s).Tag);
         void OnSaveMyPreset(object s, RoutedEventArgs e) => Settings.SaveMyPreset();
+
+        // ---- keys and mouse ---------------------------------------------------
+
+        /// <summary>One control on the controls card: its name and its two keys.</summary>
+        public class KeyRow : INotifyPropertyChanged
+        {
+            readonly MainWindow w;
+            public int Index { get; }
+            public event PropertyChangedEventHandler PropertyChanged;
+            public KeyRow(MainWindow w, int index) { this.w = w; Index = index; }
+            public string Label => Loc.I["key_" + GameSettings.Controls[Index]];
+            public string Slot0 => w.SlotText(Index, 0);
+            public string Slot1 => w.SlotText(Index, 1);
+            public void Refresh()
+            {
+                foreach (var p in new[] { nameof(Label), nameof(Slot0), nameof(Slot1) })
+                    PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(p));
+            }
+        }
+        public ObservableCollection<KeyRow> KeyRows { get; } = new ObservableCollection<KeyRow>();
+        int listenRow = -1, listenSlot;
+
+        string SlotText(int row, int slot)
+        {
+            if (row == listenRow && slot == listenSlot) return Loc.I["key_press"];
+            return KeyName(Settings.GetKey(row, slot));
+        }
+
+        /// <summary>A Windows virtual key as the player knows it: "Z", "Enter", "Mouse 4".</summary>
+        static string KeyName(int vk)
+        {
+            switch (vk)
+            {
+                case 0: return "—";
+                case 0x01: return Loc.I["key_mouse_left"];
+                case 0x02: return Loc.I["key_mouse_right"];
+                case 0x04: return Loc.I["key_mouse_middle"];
+                case 0x05: return Loc.I.F("key_mouse_n", "4");
+                case 0x06: return Loc.I.F("key_mouse_n", "5");
+                case 0x0D: return "Enter";
+                case 0x20: return Loc.I["key_space"];
+                case 0x26: return "↑";
+                case 0x28: return "↓";
+                case 0x25: return "←";
+                case 0x27: return "→";
+            }
+            if (vk >= 0x30 && vk <= 0x39 || vk >= 0x41 && vk <= 0x5A) return ((char)vk).ToString();
+            var k = System.Windows.Input.KeyInterop.KeyFromVirtualKey(vk);
+            var n = k.ToString();
+            if (n.StartsWith("NumPad")) return "Num " + n.Substring(6);
+            return n.Replace("Left", "L ").Replace("Right", "R ").Trim();
+        }
+
+        void RefreshKeyRows() { foreach (var r in KeyRows) r.Refresh(); }
+
+        void OnKeySlot(object s, RoutedEventArgs e)
+        {
+            var b = (Button)s;
+            var row = (KeyRow)b.DataContext;
+            listenRow = row.Index;
+            listenSlot = int.Parse((string)b.Tag);
+            RefreshKeyRows();
+        }
+
+        void StopListening() { listenRow = -1; RefreshKeyRows(); }
+
+        void OnResetKeys(object s, RoutedEventArgs e) { listenRow = -1; Settings.ResetKeys(); }
+
+        // While a slot listens, the next key or mouse button is its new key: Esc keeps the old
+        // one, Backspace or Delete clears it. The click that started listening was a button
+        // release, so the next press is the player's choice.
+        protected override void OnPreviewKeyDown(System.Windows.Input.KeyEventArgs e)
+        {
+            if (listenRow < 0) { base.OnPreviewKeyDown(e); return; }
+            var key = e.Key == System.Windows.Input.Key.System ? e.SystemKey : e.Key;
+            e.Handled = true;
+            if (key == System.Windows.Input.Key.Escape) { StopListening(); return; }
+            var vk = key == System.Windows.Input.Key.Back || key == System.Windows.Input.Key.Delete
+                ? 0 : System.Windows.Input.KeyInterop.VirtualKeyFromKey(key);
+            if (vk > 0xFF) return;
+            int r = listenRow, sl = listenSlot;
+            listenRow = -1;
+            Settings.SetKey(r, sl, vk);
+        }
+
+        protected override void OnPreviewMouseDown(System.Windows.Input.MouseButtonEventArgs e)
+        {
+            if (listenRow < 0) { base.OnPreviewMouseDown(e); return; }
+            int vk;
+            switch (e.ChangedButton)
+            {
+                case System.Windows.Input.MouseButton.Left: vk = 0x01; break;
+                case System.Windows.Input.MouseButton.Right: vk = 0x02; break;
+                case System.Windows.Input.MouseButton.Middle: vk = 0x04; break;
+                case System.Windows.Input.MouseButton.XButton1: vk = 0x05; break;
+                default: vk = 0x06; break;
+            }
+            e.Handled = true;
+            int r = listenRow, sl = listenSlot;
+            listenRow = -1;
+            Settings.SetKey(r, sl, vk);
+        }
 
         void OnPlay(object s, RoutedEventArgs e)
         {

@@ -479,6 +479,48 @@
                                 </CheckBox>
                             </StackPanel>
                         </Border>
+                        <!-- Keyboard and mouse: PAD_KEYS and PAD_MOUSE. -->
+                        <Border Style="{StaticResource CardBorder}">
+                            <StackPanel>
+                                <TextBlock Text="{l:T keys_title}" Style="{StaticResource H2}"/>
+                                <TextBlock Text="{l:T keys_desc}" Style="{StaticResource Sub}" TextWrapping="Wrap" Margin="0,0,0,8"/>
+                                <CheckBox Style="{StaticResource Toggle}" IsChecked="{Binding Settings.MouseLook}" AutomationProperties.Name="{l:T keys_mouse}" Margin="0,10">
+                                    <StackPanel>
+                                        <TextBlock Text="{l:T keys_mouse}"/>
+                                        <TextBlock Text="{l:T keys_mouse_desc}" Style="{StaticResource Sub}"/>
+                                    </StackPanel>
+                                </CheckBox>
+                                <Grid Style="{StaticResource Row}" IsEnabled="{Binding Settings.MouseLook}">
+                                    <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="240"/><ColumnDefinition Width="52"/></Grid.ColumnDefinitions>
+                                    <TextBlock Text="{l:T keys_mouse_sens}" VerticalAlignment="Center" Margin="0,0,20,0"/>
+                                    <Slider Grid.Column="1" Minimum="1" Maximum="100" TickFrequency="1" IsSnapToTickEnabled="True"
+                                            Value="{Binding Settings.MouseSens}" VerticalAlignment="Center"
+                                            AutomationProperties.Name="{l:T keys_mouse_sens}"/>
+                                    <TextBlock Grid.Column="2" Text="{Binding Settings.MouseSens}" VerticalAlignment="Center"
+                                               HorizontalAlignment="Right" FlowDirection="LeftToRight"/>
+                                </Grid>
+                                <ItemsControl ItemsSource="{Binding KeyRows}" Margin="0,8,0,0">
+                                    <ItemsControl.ItemsPanel>
+                                        <ItemsPanelTemplate><UniformGrid Columns="2"/></ItemsPanelTemplate>
+                                    </ItemsControl.ItemsPanel>
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <Grid Margin="0,4,18,4">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition/><ColumnDefinition Width="104"/><ColumnDefinition Width="104"/>
+                                                </Grid.ColumnDefinitions>
+                                                <TextBlock Text="{Binding Label}" VerticalAlignment="Center" Margin="0,0,10,0"/>
+                                                <Button Grid.Column="1" Tag="0" Content="{Binding Slot0}" Click="OnKeySlot" Margin="0,0,6,0"
+                                                        Padding="6,6" AutomationProperties.Name="{Binding Label}"/>
+                                                <Button Grid.Column="2" Tag="1" Content="{Binding Slot1}" Click="OnKeySlot"
+                                                        Padding="6,6" AutomationProperties.Name="{Binding Label}"/>
+                                            </Grid>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                                <Button Content="{l:T keys_reset}" Click="OnResetKeys" HorizontalAlignment="Left" Margin="0,12,0,0" MinWidth="160"/>
+                            </StackPanel>
+                        </Border>
                     </StackPanel>
                 </ScrollViewer>
 

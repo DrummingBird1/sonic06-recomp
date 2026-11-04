@@ -70,6 +70,17 @@ namespace Sonic06Launcher
         const string XwinSha256 = "96e83665ef5c1406aabd0be603a8d08e67e604f36fda630b6807ee948a614e26";
         public const string MicrosoftLicenseUrl = "https://go.microsoft.com/fwlink/?LinkId=2086102";
 
+        // SDL2, for controllers beyond the Xbox-style ones XInput sees (DualShock 4,
+        // DualSense, Switch). The build needs its headers; the game loads SDL2.dll
+        // from its folder at run time and falls back to XInput without it. Pinned,
+        // and checked against the hash GitHub lists for the release.
+        public const string Sdl2Url =
+            "https://github.com/libsdl-org/SDL/releases/download/release-2.32.10/SDL2-devel-2.32.10-VC.zip";
+        const string Sdl2Sha256 = "af347939395a58b365846aaea27391e69f9ec9d4dd650d6ac40802159b418a6e";
+        static string Sdl2Dir => Path.Combine(Workspace.Deps, "sdl2");
+        public bool HasSdl2 => File.Exists(Path.Combine(Sdl2Dir, "include", "SDL.h"))
+                               && File.Exists(Path.Combine(Sdl2Dir, "lib", "x64", "SDL2.dll"));
+
         public static readonly ToolPackage[] Packages =
         {
             new ToolPackage { Name = "Windows SDK + C runtime", Key = "step_crt", DetailKey = "detail_crt",
@@ -117,7 +128,10 @@ namespace Sonic06Launcher
             var ff = FfmpegBin();
             list.Add(ff != null && FfmpegInclude() != null ? new StatusItem("step_ffmpeg", true, null, ff)
                                                            : new StatusItem("step_ffmpeg", false, "detail_ffmpeg_missing"));
-            list.Add(new StatusItem("step_built", File.Exists(Workspace.GameExe), "detail_built"));
+            list.Add(new StatusItem("step_sdl2", HasSdl2, "detail_sdl2"));
+            // An exe built before SDL2 was downloaded reads Xbox-style pads only, until it is built again.
+            var exe = File.Exists(Workspace.GameExe);
+            list.Add(new StatusItem("step_built", exe && (!HasSdl2 || File.Exists(Workspace.P("build", "SDL2.dll"))), "detail_built"));
             return list;
         }
 
@@ -328,6 +342,40 @@ namespace Sonic06Launcher
             cfg.Set("ffmpeg", Path.Combine(dst, "bin"));
             cfg.Set("ffmpegInclude", Path.Combine(dst, "include"));
             log("FFmpeg is in deps\\ffmpeg.");
+        }
+
+        /// <summary>SDL2's headers, its x64 DLL and its license into deps\sdl2, from the official VC package.</summary>
+        public async Task DownloadSdl2()
+        {
+            Directory.CreateDirectory(Workspace.Deps);
+            var zip = Path.Combine(Workspace.Deps, "sdl2.zip");
+            log("Downloading SDL2 (zlib license), for controllers: " + Sdl2Url);
+            await Download(Sdl2Url, zip);
+            string hash;
+            using (var sha = System.Security.Cryptography.SHA256.Create())
+            using (var f = File.OpenRead(zip))
+                hash = string.Concat(sha.ComputeHash(f).Select(b => b.ToString("x2")));
+            if (hash != Sdl2Sha256) throw new InvalidOperationException("The SDL2 download does not match its release hash.");
+            var dst = Sdl2Dir;
+            if (Directory.Exists(dst)) Directory.Delete(dst, true);
+            await Task.Run(() =>
+            {
+                using (var z = ZipFile.OpenRead(zip))
+                    foreach (var e in z.Entries)
+                    {
+                        // SDL2-2.32.10/include/..., SDL2-2.32.10/lib/x64/SDL2.dll, SDL2-2.32.10/LICENSE.txt
+                        var slash = e.FullName.IndexOf('/');
+                        var rel = slash < 0 ? "" : e.FullName.Substring(slash + 1);
+                        if (rel.Length == 0 || rel.EndsWith("/")) continue;
+                        if (!(rel.StartsWith("include/") || rel == "lib/x64/SDL2.dll" || rel == "LICENSE.txt")) continue;
+                        var file = Path.Combine(dst, rel.Replace('/', Path.DirectorySeparatorChar));
+                        Directory.CreateDirectory(Path.GetDirectoryName(file));
+                        e.ExtractToFile(file, true);
+                    }
+            });
+            File.Delete(zip);
+            if (!HasSdl2) throw new InvalidOperationException("The SDL2 download has no include\\SDL.h or lib\\x64\\SDL2.dll.");
+            log("SDL2 is in deps\\sdl2.");
         }
 
         async Task Download(string url, string file)

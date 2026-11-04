@@ -21,7 +21,7 @@ Work in progress, not ready for general use.
 - [RPCS3](https://rpcs3.net), to decrypt the game's `EBOOT.BIN` on your machine.
 - Your own BLES00028 disc, as an ISO or a folder.
 
-The launcher installs the rest after asking: LLVM, CMake, Ninja, Git, uv and PowerShell 7 with winget, and Microsoft's C runtime and Windows SDK (about 630 MB, downloaded from Microsoft with [xwin](https://github.com/Jake-Shadle/xwin)) once you accept Microsoft's license. Visual Studio is not needed; if you have it with the C++ tools, the build uses it instead. It also downloads FFmpeg 8 (an LGPL build) for the movies, and ps3recomp.
+The launcher installs the rest after asking: LLVM, CMake, Ninja, Git, uv and PowerShell 7 with winget, and Microsoft's C runtime and Windows SDK (about 630 MB, downloaded from Microsoft with [xwin](https://github.com/Jake-Shadle/xwin)) once you accept Microsoft's license. Visual Studio is not needed; if you have it with the C++ tools, the build uses it instead. It also downloads FFmpeg 8 (an LGPL build) for the movies, SDL2 2.32.10 (zlib license) for controllers, and ps3recomp.
 
 ## Getting started
 
@@ -39,11 +39,12 @@ Then press **Play**. The other pages:
 
 - **Graphics:** your own preset next to the three built in, a graphics card picker when the PC has more than one, window or borderless fullscreen, window size, aspect ratio (keep 16:9 or stretch), VSync, the internal resolution, the upscaling filter (smooth, sharp pixels, bicubic, nearest), sharpening, FXAA, texture filtering and brightness, with performance, balanced and quality presets. The internal resolution is the size the game draws at: 1280×720 as on the PS3, up to 3840×2160, or automatic, which matches your window. On the RTX 4070 SUPER it was tested on, 3840×2160 ran as fast as 1280×720; a weaker graphics card has not been tried.
 - **Settings:** the stick dead zone, F12 for a screenshot (saved in Pictures\Sonic06), the launcher's language and the game's, sound, the keyboard as a controller, and whether Esc closes the game (off by default, so pausing never quits).
+- **Keyboard and mouse:** every pad control can take up to two keys or mouse buttons, and the mouse can move the camera (the right stick), with a sensitivity slider.
 - **Support:** update and rebuild, a bug report, the logs.
 
 The launcher speaks English, Hebrew, Spanish, French, German, Italian, Portuguese (Brazil), Japanese, Russian and Arabic, and starts in your Windows language. The translations have not been checked by native speakers yet: corrections to `launcher/Strings/*.json` are welcome.
 
-A controller works through XInput. Without one, the keyboard is the pad: arrows move, Z jumps, Enter is START. The full table is in the handoff document.
+Controllers work through SDL2, which the launcher downloads: Xbox, DualShock 4, DualSense and Switch Pro. Without SDL2 the game falls back to XInput, which sees Xbox-style controllers only. Without a controller, the keyboard is the pad: by default arrows move, Z jumps, Enter is START, and the Settings page changes any of it.
 
 From a console, `tools/launcher.ps1` has the same steps without the window.
 

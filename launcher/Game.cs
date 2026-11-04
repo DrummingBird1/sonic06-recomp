@@ -21,6 +21,9 @@ namespace Sonic06Launcher
         string windowSize = "1280x720", language = "", aspect = "keep", scaler = "bilinear", resScale = "auto";
         int sharpen, aniso, brightness = 100, deadzone = 24;
         string adapter = "";
+        bool mouseLook;
+        int mouseSens = 30;
+        readonly int[][] keys = DefaultKeyMap();
 
         // Display and sound. D3D12_FULLSCREEN, D3D12_WINDOW, D3D12_VSYNC=0, PS3_LANG, PS3_MUTE.
         public bool Fullscreen { get => fullscreen; set => Set(ref fullscreen, value); }
@@ -49,6 +52,77 @@ namespace Sonic06Launcher
         public string Adapter { get => adapter; set => Set(ref adapter, value ?? ""); }
         // How far the stick must move before it counts (PAD_DEADZONE, percent of its travel).
         public int Deadzone { get => deadzone; set => Set(ref deadzone, Math.Max(0, Math.Min(50, value))); }
+
+        // The mouse as the right stick (PAD_MOUSE=<sensitivity>), and the keys (PAD_KEYS).
+        public bool MouseLook { get => mouseLook; set => Set(ref mouseLook, value); }
+        public int MouseSens { get => mouseSens; set => Set(ref mouseSens, Math.Max(1, Math.Min(100, value))); }
+
+        /// <summary>The pad controls a key can be bound to, as cellPad's PAD_KEYS names them.</summary>
+        public static readonly string[] Controls =
+        {
+            "up", "down", "left", "right", "cam_up", "cam_down", "cam_left", "cam_right",
+            "cross", "circle", "square", "triangle", "l1", "r1", "l2", "r2", "l3", "r3", "start", "select",
+        };
+        // Windows virtual keys, two per control: the game's map without PAD_KEYS (cellPad.c).
+        static int[][] DefaultKeyMap() => new[]
+        {
+            new[] { 0x26, 0 }, new[] { 0x28, 0 }, new[] { 0x25, 0 }, new[] { 0x27, 0 },
+            new[] { 0, 0 }, new[] { 0, 0 }, new[] { 0, 0 }, new[] { 0, 0 },
+            new[] { (int)'Z', 0 }, new[] { (int)'X', 0 }, new[] { (int)'A', 0 }, new[] { (int)'S', 0 },
+            new[] { (int)'Q', 0 }, new[] { (int)'W', 0 }, new[] { (int)'1', 0 }, new[] { (int)'2', 0 },
+            new[] { 0, 0 }, new[] { 0, 0 }, new[] { 0x0D, 0 }, new[] { 0x09, 0 },
+        };
+
+        public int GetKey(int control, int slot) => keys[control][slot];
+
+        /// <summary>Binds a key (0 clears the slot). A key belongs to one control: it leaves any other it had.</summary>
+        public void SetKey(int control, int slot, int vk)
+        {
+            if (vk != 0)
+                foreach (var k in keys) for (var j = 0; j < 2; j++) if (k[j] == vk) k[j] = 0;
+            keys[control][slot] = vk;
+            KeysChanged();
+        }
+
+        public void ResetKeys()
+        {
+            var d = DefaultKeyMap();
+            for (var i = 0; i < keys.Length; i++) { keys[i][0] = d[i][0]; keys[i][1] = d[i][1]; }
+            KeysChanged();
+        }
+
+        void KeysChanged()
+        {
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs("Keys"));
+            Save();
+        }
+
+        /// <summary>"cross=0x5A,start=0x0D+0x20,...": every control that has a key.</summary>
+        string KeysText() => string.Join(",", Controls.Select((n, i) => (n, k: keys[i]))
+            .Where(c => c.k[0] != 0 || c.k[1] != 0)
+            .Select(c => c.n + "=" + string.Join("+", c.k.Where(v => v != 0).Select(v => "0x" + v.ToString("X2")))));
+
+        bool KeysAreDefault()
+        {
+            var d = DefaultKeyMap();
+            return keys.Select((k, i) => k[0] == d[i][0] && k[1] == d[i][1]).All(x => x);
+        }
+
+        void LoadKeys(string text)
+        {
+            if (string.IsNullOrEmpty(text)) return;
+            foreach (var k in keys) { k[0] = 0; k[1] = 0; }
+            foreach (var part in text.Split(','))
+            {
+                var eq = part.IndexOf('=');
+                if (eq < 0) continue;
+                var i = Array.IndexOf(Controls, part.Substring(0, eq));
+                if (i < 0) continue;
+                var vs = part.Substring(eq + 1).Split('+');
+                for (var j = 0; j < 2 && j < vs.Length; j++)
+                    try { keys[i][j] = Convert.ToInt32(vs[j], 16) & 0xFF; } catch (Exception) { /* a slot that does not parse stays empty */ }
+            }
+        }
 
         /// <summary>F12 saves a BMP here.</summary>
         public static string ScreenshotDir => Path.Combine(
@@ -149,7 +223,9 @@ namespace Sonic06Launcher
                 sharpen = Int(c, "sharpen", 0), fxaa = c.Bool("fxaa"), aniso = Int(c, "aniso", 0), brightness = Int(c, "brightness", 100),
                 resScale = c.Str("resScale", "auto"), shaderAsync = c.Bool("shaderAsync"),
                 adapter = c.Str("adapter"), deadzone = Int(c, "deadzone", 24),
+                mouseLook = c.Bool("mouseLook"), mouseSens = Int(c, "mouseSens", 30),
             };
+            s.LoadKeys(c.Str("keys"));
             s.cfg = c;
             return s;
         }
@@ -163,6 +239,8 @@ namespace Sonic06Launcher
             cfg.Put("fxaa", fxaa); cfg.Put("aniso", aniso.ToString()); cfg.Put("brightness", brightness.ToString());
             cfg.Put("resScale", resScale); cfg.Put("shaderAsync", shaderAsync);
             cfg.Put("adapter", adapter); cfg.Put("deadzone", deadzone.ToString());
+            cfg.Put("mouseLook", mouseLook); cfg.Put("mouseSens", mouseSens.ToString());
+            cfg.Put("keys", KeysAreDefault() ? "" : KeysText());
             cfg.Save();
         }
 
@@ -207,6 +285,9 @@ namespace Sonic06Launcher
             if (ShaderAsync) e["D3D12_SHADER_ASYNC"] = "1";
             if (Adapter.Length > 0) e["CELLMARK_ADAPTER"] = Adapter;
             if (Deadzone != 24) e["PAD_DEADZONE"] = Deadzone.ToString(inv);
+            // Without PAD_KEYS the game has its own default map; "start=0" is a map with no key at all.
+            if (!KeysAreDefault()) { var k = KeysText(); e["PAD_KEYS"] = k.Length > 0 ? k : "start=0"; }
+            if (MouseLook) e["PAD_MOUSE"] = MouseSens.ToString(inv);
             e["D3D12_SCREENSHOT_DIR"] = ScreenshotDir;
             return e;
         }

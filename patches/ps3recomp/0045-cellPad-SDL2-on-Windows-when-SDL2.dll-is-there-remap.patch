@@ -1,0 +1,628 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: DrummingBird1 <1979036+DrummingBird1@users.noreply.github.com>
+Date: Wed, 4 Nov 2026 05:02:34 +0200
+Subject: [PATCH] cellPad: SDL2 on Windows when SDL2.dll is there, remappable
+ keyboard, the mouse as the right stick
+
+- PS3RECOMP_SDL2_RUNTIME (Windows): SDL2's headers at build time, SDL2.dll
+  from the exe's folder at run time through function pointers, so the exe
+  never imports it. DualShock 4, DualSense and Switch pads work as well as
+  Xbox ones; no DLL, PAD_SDL2=0, or an SDL init failure falls back to XInput.
+- The keyboard for port 0 no longer lives in the XInput backend. PAD_KEYS=
+  <control>=<vk>[+<vk>],... replaces its map (two keys a control, mouse
+  buttons are virtual keys too), with cam_* controls for the right stick.
+- PAD_MOUSE=<1..100>: the mouse as the right stick while the game window is
+  in front: hidden cursor, kept inside the window, recentred only near an
+  edge (recentring on every poll read as motion under display scaling).
+  PAD_MOUSE_DEBUG=1 logs every motion and stick value.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ CMakeLists.txt       |  16 ++
+ libs/input/cellPad.c | 467 +++++++++++++++++++++++++++++++++++--------
+ 2 files changed, 398 insertions(+), 85 deletions(-)
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 250d8d2c..1014a00e 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -202,6 +202,22 @@ if(PS3RECOMP_FFMPEG_RUNTIME)
+     message(STATUS "  FFmpeg:       run-time loaded (headers in ${PS3RECOMP_FFMPEG_INCLUDE_DIR})")
+ endif()
+ 
++# On Windows, cellPad reads controllers through SDL2 when this is on: SDL2.dll
++# from the exe's folder, loaded at run time like FFmpeg, so the build needs only
++# SDL2's headers and an exe without the DLL falls back to XInput. SDL2 adds the
++# DualShock 4, DualSense and Switch pads that XInput does not see.
++option(PS3RECOMP_SDL2_RUNTIME "Windows: controllers through SDL2.dll loaded at run time (needs the SDL2 headers)" OFF)
++if(WIN32 AND PS3RECOMP_SDL2_RUNTIME)
++    find_path(PS3RECOMP_SDL2_INCLUDE_DIR SDL.h)
++    if(NOT PS3RECOMP_SDL2_INCLUDE_DIR)
++        message(FATAL_ERROR "SDL2 headers not found: pass -DPS3RECOMP_SDL2_INCLUDE_DIR=<dir containing SDL.h> "
++            "(the include folder of SDL2-devel-<version>-VC.zip)")
++    endif()
++    target_include_directories(ps3recomp_runtime PRIVATE "${PS3RECOMP_SDL2_INCLUDE_DIR}")
++    target_compile_definitions(ps3recomp_runtime PRIVATE PS3RECOMP_SDL2_RUNTIME)
++    message(STATUS "  SDL2:         run-time loaded for controllers (headers in ${PS3RECOMP_SDL2_INCLUDE_DIR})")
++endif()
++
+ # ---------------------------------------------------------------------------
+ # Guest shaders on Metal: HLSL -> SPIR-V -> MSL
+ # ---------------------------------------------------------------------------
+diff --git a/libs/input/cellPad.c b/libs/input/cellPad.c
+index 5c49f42e..e70132fa 100644
+--- a/libs/input/cellPad.c
++++ b/libs/input/cellPad.c
+@@ -6,9 +6,16 @@
+  * Backend selection:
+  *   - Windows default: XInput, loaded at run time from System32 (XInput1_4.dll,
+  *     XInput1_3.dll, XInput9_1_0.dll); no XInput DLL means no pads
++ *   - Windows with PS3RECOMP_SDL2_RUNTIME (only SDL2's headers at build time):
++ *     SDL2.dll from the exe's folder, loaded at run time, so DualShock 4,
++ *     DualSense and Switch pads work as well as Xbox ones. No SDL2.dll, or
++ *     PAD_SDL2=0, falls back to XInput
+  *   - Everywhere else / if PS3RECOMP_PAD_USE_SDL2 is defined: SDL2 GameController
+  *
+  * Define PS3RECOMP_PAD_USE_SDL2 to force SDL2 backend on Windows.
++ *
++ * Windows also has the keyboard and the mouse for port 0 (pad_poll_keyboard),
++ * with the keys from PAD_KEYS and the mouse as the right stick with PAD_MOUSE.
+  */
+ 
+ #include <time.h>
+@@ -41,6 +48,9 @@ static double pad_clock(unsigned long long t0_ms)
+ #if defined(PS3RECOMP_PAD_USE_SDL2)
+   #define PAD_BACKEND_SDL2  1
+   #define PAD_BACKEND_XINPUT 0
++#elif defined(_WIN32) && defined(PS3RECOMP_SDL2_RUNTIME)
++  #define PAD_BACKEND_SDL2  1   /* when SDL2.dll loads (s_sdl_on) ... */
++  #define PAD_BACKEND_XINPUT 1  /* ... and XInput when it does not */
+ #elif defined(_WIN32)
+   #define PAD_BACKEND_SDL2  0
+   #define PAD_BACKEND_XINPUT 1
+@@ -48,12 +58,15 @@ static double pad_clock(unsigned long long t0_ms)
+   #define PAD_BACKEND_SDL2  1
+   #define PAD_BACKEND_XINPUT 0
+ #endif
++#define PAD_SDL2_DYNAMIC (PAD_BACKEND_SDL2 && PAD_BACKEND_XINPUT)
+ 
+-#if PAD_BACKEND_XINPUT
++#ifdef _WIN32
+   #ifndef WIN32_LEAN_AND_MEAN
+     #define WIN32_LEAN_AND_MEAN
+   #endif
+   #include <windows.h>
++#endif
++#if PAD_BACKEND_XINPUT
+   /* Types only. The exe must not import an XInput DLL: MinGW's libxinput is
+    * xinput1_3.dll, which only the DirectX June 2010 redistributable installs,
+    * so on a stock Windows 10/11 the exe did not start (0xC0000135). The DLL is
+@@ -61,8 +74,75 @@ static double pad_clock(unsigned long long t0_ms)
+   #include <xinput.h>
+ #endif
+ 
+-#if PAD_BACKEND_SDL2
++#if PAD_SDL2_DYNAMIC
++  /* The same reason as XInput: the exe does not import SDL2.dll, and starts
++   * without it. Every SDL function used below goes through a pointer that
++   * pad_sdl_load() fills from the DLL; one left out of PAD_SDL_FNS shows up as
++   * an unresolved SDL_ symbol at link time, since no SDL2.lib is linked. */
++  #define SDL_MAIN_HANDLED
++  #include <SDL.h>
++  #define PAD_SDL_FNS(X) \
++    X(SDL_GameControllerClose) X(SDL_GameControllerGetAttached) X(SDL_GameControllerGetAxis) \
++    X(SDL_GameControllerGetButton) X(SDL_GameControllerHasRumble) X(SDL_GameControllerName) \
++    X(SDL_GameControllerOpen) X(SDL_GameControllerRumble) X(SDL_GameControllerUpdate) \
++    X(SDL_GetError) X(SDL_InitSubSystem) X(SDL_IsGameController) X(SDL_JoystickGetDeviceGUID) \
++    X(SDL_JoystickGetDeviceInstanceID) X(SDL_NumJoysticks) X(SDL_PeepEvents) X(SDL_SetHint) \
++    X(SDL_WasInit)
++  #define PAD_SDL_PTR(fn) static __typeof__(&fn) p_##fn;
++  PAD_SDL_FNS(PAD_SDL_PTR)
++  #undef PAD_SDL_PTR
++  static int s_sdl_on;   /* SDL2.dll loaded and its game controller subsystem up */
++
++  /* SDL2.dll next to the exe, or PAD_SDL2_DLL; PAD_SDL2=0 keeps XInput. */
++  static int pad_sdl_load(void)
++  {
++      const char* off = getenv("PAD_SDL2");
++      if (off && !strcmp(off, "0")) { printf("[cellPad] PAD_SDL2=0: XInput\n"); return 0; }
++      wchar_t path[MAX_PATH];
++      const char* over = getenv("PAD_SDL2_DLL");
++      if (over && *over) MultiByteToWideChar(CP_UTF8, 0, over, -1, path, MAX_PATH);
++      else {
++          DWORD n = GetModuleFileNameW(NULL, path, MAX_PATH);
++          while (n > 0 && path[n - 1] != L'\\' && path[n - 1] != L'/') n--;
++          if (n == 0 || n + 9 >= MAX_PATH) return 0;
++          wcscpy(path + n, L"SDL2.dll");
++      }
++      HMODULE m = LoadLibraryExW(path, NULL, LOAD_WITH_ALTERED_SEARCH_PATH);
++      if (!m) { printf("[cellPad] no SDL2.dll (%ls): XInput, Xbox-style pads only\n", path); return 0; }
++      int missing = 0;
++  #define PAD_SDL_RESOLVE(fn) \
++      if (!(*(void**)&p_##fn = (void*)(uintptr_t)GetProcAddress(m, #fn))) { printf("[cellPad] SDL2.dll has no %s\n", #fn); missing = 1; }
++      PAD_SDL_FNS(PAD_SDL_RESOLVE)
++  #undef PAD_SDL_RESOLVE
++      if (missing) { FreeLibrary(m); printf("[cellPad] SDL2.dll unusable: XInput\n"); return 0; }
++      printf("[cellPad] SDL2 from %ls\n", path);
++      return 1;
++  }
++  #define SDL_GameControllerClose          p_SDL_GameControllerClose
++  #define SDL_GameControllerGetAttached    p_SDL_GameControllerGetAttached
++  #define SDL_GameControllerGetAxis        p_SDL_GameControllerGetAxis
++  #define SDL_GameControllerGetButton      p_SDL_GameControllerGetButton
++  #define SDL_GameControllerHasRumble      p_SDL_GameControllerHasRumble
++  #define SDL_GameControllerName           p_SDL_GameControllerName
++  #define SDL_GameControllerOpen           p_SDL_GameControllerOpen
++  #define SDL_GameControllerRumble         p_SDL_GameControllerRumble
++  #define SDL_GameControllerUpdate         p_SDL_GameControllerUpdate
++  #define SDL_GetError                     p_SDL_GetError
++  #define SDL_InitSubSystem                p_SDL_InitSubSystem
++  #define SDL_IsGameController             p_SDL_IsGameController
++  #define SDL_JoystickGetDeviceGUID        p_SDL_JoystickGetDeviceGUID
++  #define SDL_JoystickGetDeviceInstanceID  p_SDL_JoystickGetDeviceInstanceID
++  #define SDL_NumJoysticks                 p_SDL_NumJoysticks
++  #define SDL_PeepEvents                   p_SDL_PeepEvents
++  #define SDL_SetHint                      p_SDL_SetHint
++  #define SDL_WasInit                      p_SDL_WasInit
++  #define PAD_SDL_ACTIVE s_sdl_on
++#elif PAD_BACKEND_SDL2
+   #include <SDL2/SDL.h>
++  #define PAD_SDL_ACTIVE 1
++#endif
++#ifndef PAD_SDL_ACTIVE
++  #define PAD_SDL_ACTIVE 0
+ #endif
+ 
+ /* ---------------------------------------------------------------------------
+@@ -263,79 +343,6 @@ static u8 pad_xinput_stick_to_u8(short raw, short deadzone)
+     return (u8)val;
+ }
+ 
+-/* Keyboard fallback for port 0.
+- *
+- * The only backend here is XInput, so on a machine with no controller plugged
+- * in a title gets a pad that is reported present and never presses anything --
+- * it can be watched but not played. That is what The Simpsons Arcade Game hit:
+- * it reached its attract loop and no input existed to start a game.
+- *
+- * Only fills in for port 0, only when XInput found nothing there, so a real
+- * controller always wins and nothing changes for a port that has one. Keys are
+- * read only while a window of THIS process is in the foreground, so typing in
+- * another application does not drive the game. Set PAD_NO_KEYBOARD=1 to
+- * disable it entirely.
+- *
+- * Arrows = d-pad, Z/X/A/S = cross/circle/square/triangle, Q/W = L1/R1,
+- * 1/2 = L2/R2, Enter = START, Tab = SELECT. The left stick mirrors the d-pad
+- * so a title that reads the stick instead is playable too. */
+-#ifdef _WIN32
+-static int pad_host_window_focused(void)
+-{
+-    HWND fg = GetForegroundWindow();
+-    if (!fg) return 0;
+-    DWORD pid = 0;
+-    GetWindowThreadProcessId(fg, &pid);
+-    return pid == GetCurrentProcessId();
+-}
+-
+-static void pad_poll_keyboard(void)
+-{
+-    static int off = -1;
+-    if (off < 0) off = getenv("PAD_NO_KEYBOARD") ? 1 : 0;
+-    if (off) return;
+-
+-    PadHostState* hs = &s_host_state[0];
+-    if (!pad_host_window_focused()) {
+-        /* Release everything on focus loss, or a key held while alt-tabbing
+-         * would stay down forever. */
+-        hs->buttons = 0;
+-        hs->analog_lx = hs->analog_ly = 128;
+-        hs->analog_rx = hs->analog_ry = 128;
+-        hs->connected = 1;
+-        return;
+-    }
+-
+-    static const struct { int vk; u16 btn; } map[] = {
+-        { VK_UP,     CELL_PAD_CTRL_UP },      { VK_DOWN,  CELL_PAD_CTRL_DOWN },
+-        { VK_LEFT,   CELL_PAD_CTRL_LEFT },    { VK_RIGHT, CELL_PAD_CTRL_RIGHT },
+-        { 'Z',       CELL_PAD_CTRL_CROSS },   { 'X',      CELL_PAD_CTRL_CIRCLE },
+-        { 'A',       CELL_PAD_CTRL_SQUARE },  { 'S',      CELL_PAD_CTRL_TRIANGLE },
+-        { 'Q',       CELL_PAD_CTRL_L1 },      { 'W',      CELL_PAD_CTRL_R1 },
+-        { '1',       CELL_PAD_CTRL_L2 },      { '2',      CELL_PAD_CTRL_R2 },
+-        { VK_RETURN, CELL_PAD_CTRL_START },   { VK_TAB,   CELL_PAD_CTRL_SELECT },
+-    };
+-
+-    u16 btns = 0;
+-    for (unsigned i = 0; i < sizeof map / sizeof map[0]; i++)
+-        if (GetAsyncKeyState(map[i].vk) & 0x8000) btns |= map[i].btn;
+-
+-    hs->buttons   = btns;
+-    hs->connected = 1;
+-    hs->analog_lx = (u8)((btns & CELL_PAD_CTRL_LEFT) ? 0 :
+-                         (btns & CELL_PAD_CTRL_RIGHT) ? 255 : 128);
+-    hs->analog_ly = (u8)((btns & CELL_PAD_CTRL_UP) ? 0 :
+-                         (btns & CELL_PAD_CTRL_DOWN) ? 255 : 128);
+-    hs->analog_rx = hs->analog_ry = 128;
+-    hs->trigger_l2 = (u8)((btns & CELL_PAD_CTRL_L2) ? 255 : 0);
+-    hs->trigger_r2 = (u8)((btns & CELL_PAD_CTRL_R2) ? 255 : 0);
+-
+-    { static int said = 0;
+-      if (!said && btns) { said = 1;
+-          printf("[cellPad] keyboard fallback active on port 0 (no XInput device)\n");
+-          fflush(stdout); } }
+-}
+-#endif
+ 
+ /* XInputGetState on a slot with nothing plugged in costs about 140 us (2 us on
+  * a connected one), and the backend is polled at least once a frame: three
+@@ -418,13 +425,13 @@ static void pad_poll_xinput(void)
+     }
+ }
+ 
+-static void pad_init_backend(void)
++static void pad_xinput_init(void)
+ {
+     /* XInput needs no explicit init, only the run-time load of the DLL */
+     pad_xinput_load();
+ }
+ 
+-static void pad_shutdown_backend(void)
++static void pad_xinput_shutdown(void)
+ {
+     /* XInput needs no explicit shutdown */
+ }
+@@ -639,8 +646,12 @@ static void pad_poll_sdl2(void)
+     }
+ }
+ 
+-static void pad_init_backend(void)
++static void pad_sdl2_init(void)
+ {
++#if PAD_SDL2_DYNAMIC
++    { static int tried; if (!tried) { tried = 1; s_sdl_on = pad_sdl_load(); } }
++    if (!s_sdl_on) return;
++#endif
+     if (!s_sdl_inited) {
+         if (SDL_WasInit(SDL_INIT_GAMECONTROLLER) == 0) {
+             /* The game is not always the focused app: on macOS its window
+@@ -655,7 +666,13 @@ static void pad_init_backend(void)
+              * cared. SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS=0 in the
+              * environment still wins over this. */
+             SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
+-            SDL_InitSubSystem(SDL_INIT_GAMECONTROLLER);
++            if (SDL_InitSubSystem(SDL_INIT_GAMECONTROLLER) < 0) {
++                fprintf(stderr, "[cellPad] SDL game controllers did not start: %s\n", SDL_GetError());
++#if PAD_SDL2_DYNAMIC
++                s_sdl_on = 0;   /* XInput instead */
++                return;
++#endif
++            }
+         }
+         s_sdl_inited = 1;
+     }
+@@ -666,7 +683,7 @@ static void pad_init_backend(void)
+     pad_sdl_hotplug(1);
+ }
+ 
+-static void pad_shutdown_backend(void)
++static void pad_sdl2_shutdown(void)
+ {
+     for (int i = 0; i < PAD_MAX_HOST_PORTS; i++) pad_sdl_close(i, 0);
+     memset(s_rumble, 0, sizeof s_rumble);
+@@ -674,6 +691,282 @@ static void pad_shutdown_backend(void)
+ 
+ #endif /* PAD_BACKEND_SDL2 */
+ 
++static void pad_init_backend(void)
++{
++#if PAD_SDL2_DYNAMIC
++    pad_sdl2_init();
++    if (!s_sdl_on) pad_xinput_init();
++#elif PAD_BACKEND_XINPUT
++    pad_xinput_init();
++#elif PAD_BACKEND_SDL2
++    pad_sdl2_init();
++#endif
++}
++
++static void pad_shutdown_backend(void)
++{
++#if PAD_SDL2_DYNAMIC
++    if (s_sdl_on) pad_sdl2_shutdown(); else pad_xinput_shutdown();
++#elif PAD_BACKEND_XINPUT
++    pad_xinput_shutdown();
++#elif PAD_BACKEND_SDL2
++    pad_sdl2_shutdown();
++#endif
++}
++
++/* ---------------------------------------------------------------------------
++ * Keyboard and mouse for port 0 (Windows)
++ *
++ * The keyboard fills in for port 0 when no controller is there, so on a
++ * machine with no controller plugged in a title is still playable (The
++ * Simpsons Arcade Game reached its attract loop and no input existed to start
++ * a game). A real controller always wins. Keys and mouse buttons are read only
++ * while a window of THIS process is in the foreground, so typing in another
++ * application does not drive the game. PAD_NO_KEYBOARD=1 turns it off.
++ *
++ * PAD_KEYS=<control>=<vk>[+<vk>],... replaces the whole map with Windows
++ * virtual-key codes, two per control at most; a control it leaves out has no
++ * key. Mouse buttons are virtual keys too (1 left, 2 right, 4 middle, 5 and 6
++ * the side buttons). The controls are up/down/left/right (the d-pad, and the
++ * left stick with it, so a title that reads either is playable), cam_up/
++ * cam_down/cam_left/cam_right (the right stick), cross, circle, square,
++ * triangle, l1, r1, l2, r2, l3, r3, start and select. Without PAD_KEYS:
++ * arrows, Z/X/A/S = cross/circle/square/triangle, Q/W = L1/R1, 1/2 = L2/R2,
++ * Enter = START, Tab = SELECT.
++ *
++ * PAD_MOUSE=<1..100> makes the mouse the right stick, with that sensitivity:
++ * while the game window has the focus the cursor is hidden and held at the
++ * centre of the window, and how fast it moves away from there is how far the
++ * stick is pushed. A camera key that is held wins over the mouse.
++ * -----------------------------------------------------------------------*/
++
++#ifdef _WIN32
++enum { K_UP, K_DOWN, K_LEFT, K_RIGHT, K_CAM_UP, K_CAM_DOWN, K_CAM_LEFT, K_CAM_RIGHT,
++       K_CROSS, K_CIRCLE, K_SQUARE, K_TRIANGLE, K_L1, K_R1, K_L2, K_R2, K_L3, K_R3,
++       K_START, K_SELECT, K_COUNT };
++static const char* const k_names[K_COUNT] = {
++    "up", "down", "left", "right", "cam_up", "cam_down", "cam_left", "cam_right",
++    "cross", "circle", "square", "triangle", "l1", "r1", "l2", "r2", "l3", "r3",
++    "start", "select" };
++static const u16 k_buttons[K_COUNT] = {
++    CELL_PAD_CTRL_UP, CELL_PAD_CTRL_DOWN, CELL_PAD_CTRL_LEFT, CELL_PAD_CTRL_RIGHT, 0, 0, 0, 0,
++    CELL_PAD_CTRL_CROSS, CELL_PAD_CTRL_CIRCLE, CELL_PAD_CTRL_SQUARE, CELL_PAD_CTRL_TRIANGLE,
++    CELL_PAD_CTRL_L1, CELL_PAD_CTRL_R1, CELL_PAD_CTRL_L2, CELL_PAD_CTRL_R2,
++    CELL_PAD_CTRL_L3, CELL_PAD_CTRL_R3, CELL_PAD_CTRL_START, CELL_PAD_CTRL_SELECT };
++static u8 s_keys[K_COUNT][2];   /* virtual keys, 0 = none */
++
++static void pad_keys_load(void)
++{
++    memset(s_keys, 0, sizeof s_keys);
++    const char* e = getenv("PAD_KEYS");
++    if (!e || !*e) {
++        static const u8 dflt[K_COUNT] = { VK_UP, VK_DOWN, VK_LEFT, VK_RIGHT, 0, 0, 0, 0,
++            'Z', 'X', 'A', 'S', 'Q', 'W', '1', '2', 0, 0, VK_RETURN, VK_TAB };
++        for (int k = 0; k < K_COUNT; k++) s_keys[k][0] = dflt[k];
++        return;
++    }
++    int bound = 0;
++    for (const char* p = e; *p; ) {
++        const char* eq = strchr(p, '=');
++        const char* end = strchr(p, ',');
++        if (!end) end = p + strlen(p);
++        if (eq && eq < end) {
++            int k = 0;
++            while (k < K_COUNT && !(strlen(k_names[k]) == (size_t)(eq - p) && !strncmp(p, k_names[k], (size_t)(eq - p)))) k++;
++            const char* v = eq + 1;
++            for (int slot = 0; k < K_COUNT && slot < 2 && v < end; slot++) {
++                char* stop;
++                long vk = strtol(v, &stop, 0);
++                if (stop == v) break;
++                if (vk > 0 && vk < 256) { s_keys[k][slot] = (u8)vk; bound++; }
++                v = (*stop == '+') ? stop + 1 : end;
++            }
++            if (k == K_COUNT) printf("[cellPad] PAD_KEYS: no control '%.*s'\n", (int)(eq - p), p);
++        }
++        p = *end ? end + 1 : end;
++    }
++    printf("[cellPad] PAD_KEYS: %d keys bound\n", bound);
++}
++
++static int pad_key_down(int k)
++{
++    for (int slot = 0; slot < 2; slot++)
++        if (s_keys[k][slot] && (GetAsyncKeyState(s_keys[k][slot]) & 0x8000)) return 1;
++    return 0;
++}
++
++static int pad_host_window_focused(void)
++{
++    HWND fg = GetForegroundWindow();
++    if (!fg) return 0;
++    DWORD pid = 0;
++    GetWindowThreadProcessId(fg, &pid);
++    return pid == GetCurrentProcessId();
++}
++
++/* ---- the mouse as the right stick ------------------------------------- */
++static int     s_mouse_sens = -1;   /* PAD_MOUSE, 0 = off */
++static HWND    s_mouse_hwnd;        /* the window whose cursor is hidden */
++static HCURSOR s_mouse_old_cursor, s_mouse_blank;
++static unsigned long long s_mouse_ms;   /* when s_mouse_ref was taken, 0 = not yet */
++static POINT   s_mouse_ref;         /* the cursor at the last poll */
++static float   s_mouse_x, s_mouse_y;   /* smoothed stick, -1..1 */
++static unsigned long long s_mouse_moved_ms;   /* the last poll that saw a motion */
++#define PAD_MOUSE_HOLD_MS 50
++static int     s_mouse_dbg;         /* PAD_MOUSE_DEBUG */
++
++/* The window class's cursor is what DefWindowProc shows on WM_SETCURSOR, so a
++ * blank one there hides the cursor over the game from this (non-window)
++ * thread; the old one goes back when the focus leaves. */
++static void pad_mouse_release(void)
++{
++    if (s_mouse_hwnd) {
++        SetClassLongPtrW(s_mouse_hwnd, GCLP_HCURSOR, (LONG_PTR)s_mouse_old_cursor);
++        ClipCursor(NULL);
++        s_mouse_hwnd = NULL;
++    }
++    s_mouse_ms = 0;
++    s_mouse_x = s_mouse_y = 0;
++}
++
++static void pad_mouse_poll(HWND fg, PadHostState* hs)
++{
++    RECT rc;
++    if (!GetClientRect(fg, &rc) || rc.right < 16 || rc.bottom < 16) { pad_mouse_release(); return; }
++    if (s_mouse_hwnd != fg) {
++        pad_mouse_release();
++        if (!s_mouse_blank) {
++            BYTE and_mask[128], xor_mask[128];   /* 32x32, 1 bit a pixel: all transparent */
++            memset(and_mask, 0xFF, sizeof and_mask);
++            memset(xor_mask, 0, sizeof xor_mask);
++            s_mouse_blank = CreateCursor(GetModuleHandleW(NULL), 0, 0, 32, 32, and_mask, xor_mask);
++        }
++        s_mouse_old_cursor = (HCURSOR)GetClassLongPtrW(fg, GCLP_HCURSOR);
++        SetClassLongPtrW(fg, GCLP_HCURSOR, (LONG_PTR)s_mouse_blank);
++        s_mouse_hwnd = fg;
++        printf("[cellPad] mouse look on (sensitivity %d)\n", s_mouse_sens);
++        fflush(stdout);
++    }
++    /* The motion is the cursor's own, between two reads. Moving it back to
++     * the centre on every poll made the camera turn by itself: with display
++     * scaling a SetCursorPos lands a few pixels from where the next read puts
++     * it, and that read as the mouse moving all the time. Now the cursor goes
++     * back to the centre only when it nears an edge, and the poll after that
++     * starts a new measurement. It is also kept inside the window. */
++    POINT c = { rc.right / 2, rc.bottom / 2 }, p;
++    ClientToScreen(fg, &c);
++    RECT sr = rc;
++    MapWindowPoints(fg, NULL, (POINT*)&sr, 2);
++    ClipCursor(&sr);
++    GetCursorPos(&p);
++    const unsigned long long now = pad_now_ms();
++    const unsigned long long dt = s_mouse_ms ? now - s_mouse_ms : 0;
++    float fx = 0, fy = 0;
++    if (dt > 0 && dt < 200) {
++        /* Pixels a millisecond, times the sensitivity: at 50, 1 px/ms (a
++         * brisk flick) is the stick pushed all the way. */
++        const float k = (float)s_mouse_sens * 0.02f / (float)dt;
++        fx = (float)(p.x - s_mouse_ref.x) * k;
++        fy = (float)(p.y - s_mouse_ref.y) * k;
++        /* PAD_MOUSE_DEBUG=1: every motion and every stick value, with GetTickCount64. */
++        { static int n = 0;
++          if ((p.x != s_mouse_ref.x || p.y != s_mouse_ref.y) && (s_mouse_dbg || PS3_LOG_FIRST(n, 3)))
++              printf("[cellPad] mouse look: moved %ld,%ld in %llu ms (tick %llu)\n",
++                     (long)(p.x - s_mouse_ref.x), (long)(p.y - s_mouse_ref.y), dt, now); }
++    }
++    s_mouse_ref = p;
++    s_mouse_ms = now;
++    const long qx = (rc.right - rc.left) / 4, qy = (rc.bottom - rc.top) / 4;
++    if (p.x < sr.left + qx || p.x > sr.right - qx || p.y < sr.top + qy || p.y > sr.bottom - qy) {
++        SetCursorPos(c.x, c.y);
++        s_mouse_ms = 0;
++    }
++    /* The mouse reports about every 16 ms, and the pad is polled more often
++     * than that, so most polls in the middle of a motion see none: the stick
++     * keeps its value for PAD_MOUSE_HOLD_MS after the last motion, then
++     * returns to the centre. Halving it on every empty poll instead swung it
++     * between about half and all of the way (69, 39, 84, 47, 88 in a test). */
++    if (fx || fy) {
++        s_mouse_x = s_mouse_x * 0.4f + fx * 0.6f;
++        s_mouse_y = s_mouse_y * 0.4f + fy * 0.6f;
++        s_mouse_moved_ms = now;
++    } else if (now - s_mouse_moved_ms > PAD_MOUSE_HOLD_MS) {
++        s_mouse_x *= 0.5f;
++        s_mouse_y *= 0.5f;
++    }
++    if (s_mouse_x > 1) s_mouse_x = 1; else if (s_mouse_x < -1) s_mouse_x = -1;
++    if (s_mouse_y > 1) s_mouse_y = 1; else if (s_mouse_y < -1) s_mouse_y = -1;
++    if (s_mouse_x > -0.02f && s_mouse_x < 0.02f) s_mouse_x = 0;
++    if (s_mouse_y > -0.02f && s_mouse_y < 0.02f) s_mouse_y = 0;
++    hs->analog_rx = (u8)(128 + (int)(s_mouse_x * 127.0f));
++    hs->analog_ry = (u8)(128 + (int)(s_mouse_y * 127.0f));
++    { static int n = 0;
++      if ((s_mouse_x || s_mouse_y) && (s_mouse_dbg || PS3_LOG_FIRST(n, 5))) {
++          printf("[cellPad] mouse look: right stick %u,%u (tick %llu)\n", hs->analog_rx, hs->analog_ry, now);
++          fflush(stdout); } }
++}
++
++static void pad_poll_keyboard(void)
++{
++    static int off = -1;
++    if (off < 0) {
++        off = getenv("PAD_NO_KEYBOARD") ? 1 : 0;
++        pad_keys_load();
++        const char* m = getenv("PAD_MOUSE");
++        s_mouse_sens = m ? atoi(m) : 0;
++        s_mouse_dbg = getenv("PAD_MOUSE_DEBUG") ? 1 : 0;
++        if (s_mouse_sens < 0) s_mouse_sens = 0;
++        if (s_mouse_sens > 100) s_mouse_sens = 100;
++    }
++    if (off) return;
++
++    PadHostState* hs = &s_host_state[0];
++    hs->connected = 1;
++    if (!pad_host_window_focused()) {
++        /* Release everything on focus loss, or a key held while alt-tabbing
++         * would stay down forever; the cursor comes back too. */
++        hs->buttons = 0;
++        hs->analog_lx = hs->analog_ly = 128;
++        hs->analog_rx = hs->analog_ry = 128;
++        hs->trigger_l2 = hs->trigger_r2 = 0;
++        pad_mouse_release();
++        return;
++    }
++
++    u16 btns = 0;
++    int held[K_COUNT];
++    for (int k = 0; k < K_COUNT; k++) {
++        held[k] = pad_key_down(k);
++        if (held[k]) btns |= k_buttons[k];
++    }
++
++    hs->buttons   = btns;
++    hs->analog_lx = (u8)(held[K_LEFT] ? 0 : held[K_RIGHT] ? 255 : 128);
++    hs->analog_ly = (u8)(held[K_UP] ? 0 : held[K_DOWN] ? 255 : 128);
++    hs->analog_rx = hs->analog_ry = 128;
++    if (s_mouse_sens > 0) pad_mouse_poll(GetForegroundWindow(), hs);
++    if (held[K_CAM_LEFT] || held[K_CAM_RIGHT]) hs->analog_rx = (u8)(held[K_CAM_LEFT] ? 0 : 255);
++    if (held[K_CAM_UP] || held[K_CAM_DOWN])    hs->analog_ry = (u8)(held[K_CAM_UP] ? 0 : 255);
++    hs->trigger_l2 = (u8)((btns & CELL_PAD_CTRL_L2) ? 255 : 0);
++    hs->trigger_r2 = (u8)((btns & CELL_PAD_CTRL_R2) ? 255 : 0);
++    hs->press_up       = (btns & CELL_PAD_CTRL_UP)       ? 255 : 0;
++    hs->press_down     = (btns & CELL_PAD_CTRL_DOWN)     ? 255 : 0;
++    hs->press_left     = (btns & CELL_PAD_CTRL_LEFT)     ? 255 : 0;
++    hs->press_right    = (btns & CELL_PAD_CTRL_RIGHT)    ? 255 : 0;
++    hs->press_triangle = (btns & CELL_PAD_CTRL_TRIANGLE) ? 255 : 0;
++    hs->press_circle   = (btns & CELL_PAD_CTRL_CIRCLE)   ? 255 : 0;
++    hs->press_cross    = (btns & CELL_PAD_CTRL_CROSS)    ? 255 : 0;
++    hs->press_square   = (btns & CELL_PAD_CTRL_SQUARE)   ? 255 : 0;
++    hs->press_l1       = (btns & CELL_PAD_CTRL_L1)       ? 255 : 0;
++    hs->press_r1       = (btns & CELL_PAD_CTRL_R1)       ? 255 : 0;
++
++    { static int said = 0;
++      if (!said && btns) { said = 1;
++          printf("[cellPad] keyboard active on port 0 (no controller there)\n");
++          fflush(stdout); } }
++}
++#endif
++
+ /* ---------------------------------------------------------------------------
+  * Poll dispatcher
+  * -----------------------------------------------------------------------*/
+@@ -717,7 +1010,9 @@ static void pad_poll_backend(void)
+      * every port. cellPadGetData hands each one out exactly once. */
+     for (int _i = 0; _i < PAD_MAX_HOST_PORTS; _i++) s_data_fresh[_i] = 1;
+ 
+-#if PAD_BACKEND_XINPUT
++#if PAD_SDL2_DYNAMIC
++    if (s_sdl_on) pad_poll_sdl2(); else pad_poll_xinput();
++#elif PAD_BACKEND_XINPUT
+     pad_poll_xinput();
+ #elif PAD_BACKEND_SDL2
+     pad_poll_sdl2();
+@@ -1426,7 +1721,7 @@ s32 cellPadSetActDirect(u32 port_no, CellPadActParam* param)
+ 
+ #if PAD_BACKEND_XINPUT
+     /* XInput keeps the motors at what they were last set to: no renewal. */
+-    if (s_host_state[port_no].connected) {
++    if (!PAD_SDL_ACTIVE && s_host_state[port_no].connected) {
+         XINPUT_VIBRATION vib;
+         vib.wLeftMotorSpeed  = (WORD)lo;
+         vib.wRightMotorSpeed = (WORD)hi;
+@@ -1435,9 +1730,11 @@ s32 cellPadSetActDirect(u32 port_no, CellPadActParam* param)
+ #endif
+ 
+ #if PAD_BACKEND_SDL2
+-    pad_lock();
+-    pad_sdl_rumble_send((int)port_no);
+-    pad_unlock();
++    if (PAD_SDL_ACTIVE) {
++        pad_lock();
++        pad_sdl_rumble_send((int)port_no);
++        pad_unlock();
++    }
+ #endif
+ 
+     return CELL_OK;

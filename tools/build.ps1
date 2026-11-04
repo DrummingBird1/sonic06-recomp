@@ -38,6 +38,21 @@ if (-not (Test-Path $ps3recomp)) {
 }
 
 $configure = $Reconfigure -or $FFmpegInclude -or $Define -or -not (Test-Path (Join-Path $build 'build.ninja'))
+# SDL2 for controllers: deps\sdl2 (the include folder and lib\x64\SDL2.dll of
+# SDL2-devel-<version>-VC.zip, which the launcher downloads). The build needs
+# only the headers; SDL2.dll goes next to the exe, which loads it at run time
+# and falls back to XInput without it.
+$sdl2 = Join-Path $root 'deps\sdl2'
+$sdlArgs = @()
+if (Test-Path (Join-Path $sdl2 'include\SDL.h')) {
+  $sdlArgs = @('-DPS3RECOMP_SDL2_RUNTIME=ON', "-DPS3RECOMP_SDL2_INCLUDE_DIR=$(Join-Path $sdl2 'include')")
+  $cache = Join-Path $build 'CMakeCache.txt'
+  if (-not (Test-Path $cache) -or -not (Select-String -Path $cache -Pattern 'PS3RECOMP_SDL2_RUNTIME:BOOL=ON' -Quiet)) { $configure = $true }
+}
+function Copy-Sdl2 {
+  $dll = Join-Path $sdl2 'lib\x64\SDL2.dll'
+  if (Test-Path $dll) { Copy-Item $dll (Join-Path $build 'SDL2.dll') -Force }
+}
 $sysroot = Join-Path $root 'deps\winsysroot'
 if (-not $WinSysRoot -and -not $vs -and (Test-Path $sysroot)) { $WinSysRoot = $sysroot }
 
@@ -62,11 +77,14 @@ if ($WinSysRoot) {
            "-DCMAKE_MAKE_PROGRAM=$ninja", "-DPython3_EXECUTABLE=$py", "-DPS3RECOMP_DIR=$ps3recomp")
     if ($FFmpegInclude) { $a += '-DPS3RECOMP_FFMPEG_RUNTIME=ON', "-DPS3RECOMP_FFMPEG_INCLUDE_DIR=$FFmpegInclude" }
     foreach ($d in $Define) { $a += "-D$d" }
+    $a += $sdlArgs
     & $cmake @a
     if ($LASTEXITCODE) { exit $LASTEXITCODE }
   }
   & $cmake --build $build -j $Jobs
-  exit $LASTEXITCODE
+  $rc = $LASTEXITCODE
+  if (-not $rc) { Copy-Sdl2 }
+  exit $rc
 }
 
 $steps = @()
@@ -75,10 +93,13 @@ if ($FFmpegInclude) {
   $cacheArgs = " -DPS3RECOMP_FFMPEG_RUNTIME=ON -DPS3RECOMP_FFMPEG_INCLUDE_DIR=`"$FFmpegInclude`""
 }
 foreach ($d in $Define) { $cacheArgs += " -D$d" }
+foreach ($d in $sdlArgs) { $cacheArgs += " `"$d`"" }
 if ($configure) {
   $steps += "cmake -S `"$root`" -B `"$build`" -G Ninja -DCMAKE_BUILD_TYPE=$Config -DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl -DPython3_EXECUTABLE=`"$py`" -DPS3RECOMP_DIR=`"$ps3recomp`"$cacheArgs"
 }
 $steps += "cmake --build `"$build`" -j $Jobs"
 $cmd = "`"$vcvars`" >nul 2>&1 && set `"PATH=$llvm;$ninjaDir;%PATH%`" && " + ($steps -join ' && ')
 cmd /c $cmd
-exit $LASTEXITCODE
+$rc = $LASTEXITCODE
+if (-not $rc) { Copy-Sdl2 }
+exit $rc
