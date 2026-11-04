@@ -6,7 +6,7 @@ An unofficial PC port of the PlayStation 3 version of Sonic the Hedgehog (2006),
 
 ## Status
 
-Work in progress, not ready for general use.
+Version 0.1.0, the first public one: a work in progress, not ready for general use. What is in it is in [CHANGELOG.md](CHANGELOG.md).
 
 - Runs from the title screen through menus, movies, the town and the stages.
 - Every boss and stage entry starts without a crash, in tests of about a minute each.
@@ -50,7 +50,7 @@ From a console, `tools/launcher.ps1` has the same steps without the window.
 
 ## Reporting a problem
 
-On the **Support** tab, **Create a bug report** saves a zip on your desktop: your PC's specs, the setup status and the last game logs. It has no game files, and your Windows user folder is replaced by `%USERPROFILE%`. Attach it to an issue with what you did and what you saw.
+On the **Support** tab, **Create a bug report** saves a zip on your desktop: your PC's specs, the setup status and the last game logs. It has no game files, and your Windows user folder is replaced by `%USERPROFILE%`. The launcher then opens a [new issue](https://github.com/DrummingBird1/sonic06-recomp/issues/new?template=bug.md): attach the zip, with what you did and what you saw.
 
 ## Contributing
 

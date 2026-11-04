@@ -13,9 +13,8 @@ namespace Sonic06Launcher
     /// <summary>Updating the checkout, and the bug report a player attaches to an issue.</summary>
     static class Support
     {
-        // Set once the project has a public repository; until then the
-        // launcher only says where the report was saved.
-        public const string IssuesUrl = "";
+        // Opened after a bug report is saved: a new issue, with the bug template.
+        public const string IssuesUrl = "https://github.com/DrummingBird1/sonic06-recomp/issues/new?template=bug.md";
 
         /// <summary>git pull, and when anything came in, the toolkit, the lift and the build again.</summary>
         public static async Task Update(Setup setup, Action<string> log)

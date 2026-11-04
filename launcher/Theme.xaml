@@ -274,7 +274,13 @@
         <Setter Property="FontFamily" Value="{StaticResource UiFont}"/>
         <Setter Property="MinWidth" Value="240"/>
         <Setter Property="Height" Value="36"/>
-        <Setter Property="DisplayMemberPath" Value="Label"/>
+        <!-- A template, not DisplayMemberPath: with that the closed box keeps the text it had
+             when the item was chosen, so the launcher's language changed everywhere but there. -->
+        <Setter Property="ItemTemplate">
+            <Setter.Value>
+                <DataTemplate><TextBlock Text="{Binding Label}"/></DataTemplate>
+            </Setter.Value>
+        </Setter>
         <Setter Property="Template">
             <Setter.Value>
                 <ControlTemplate TargetType="ComboBox">
