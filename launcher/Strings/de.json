@@ -115,7 +115,7 @@
   "support_report_desc": "Ein Zip auf deinem Desktop mit den Daten deines PCs, dem Einrichtungsstatus und den letzten Spielprotokollen. Keine Spieldateien, und dein Benutzerordner wird verborgen.",
   "support_logs": "Protokollordner öffnen",
   "support_about": "Über",
-  "support_about_text": "sonic06-recomp ist eine inoffizielle Fan-Portierung, nicht mit SEGA verbunden oder von SEGA unterstützt. Der Code steht unter der MIT-Lizenz. Das Spiel gehört SEGA, und die Werkzeuge, die der Launcher herunterlädt, behalten ihre eigenen Lizenzen.",
+  "support_about_text": "Soleanna (sonic06-recomp) ist eine inoffizielle Fan-Portierung, nicht mit SEGA verbunden oder von SEGA unterstützt. Der Code steht unter der MIT-Lizenz. Das Spiel gehört SEGA, und die Werkzeuge, die der Launcher herunterlädt, behalten ihre eigenen Lizenzen.",
   "support_version": "Launcher-Version {0}",
   "busy_working": "Arbeitet…",
   "dlg_plan": "Der Launcher wird:",

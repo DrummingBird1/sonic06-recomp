@@ -19,8 +19,8 @@
     <RootNamespace>Sonic06Launcher</RootNamespace>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon>app.ico</ApplicationIcon>
-    <Version>0.3.1</Version>
-    <Product>sonic06-recomp launcher</Product>
+    <Version>0.4.0</Version>
+    <Product>Soleanna</Product>
     <GenerateDocumentationFile>false</GenerateDocumentationFile>
   </PropertyGroup>
 

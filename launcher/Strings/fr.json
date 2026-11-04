@@ -115,7 +115,7 @@
   "support_report_desc": "Un zip sur votre bureau avec la configuration de votre PC, l'état de l'installation et les derniers journaux du jeu. Aucun fichier du jeu, et votre dossier utilisateur est masqué.",
   "support_logs": "Ouvrir le dossier des journaux",
   "support_about": "À propos",
-  "support_about_text": "sonic06-recomp est un portage non officiel fait par des fans, sans lien avec SEGA ni approuvé par SEGA. Son code est sous licence MIT. Le jeu appartient à SEGA, et les outils téléchargés par le lanceur gardent leurs propres licences.",
+  "support_about_text": "Soleanna (sonic06-recomp) est un portage non officiel fait par des fans, sans lien avec SEGA ni approuvé par SEGA. Son code est sous licence MIT. Le jeu appartient à SEGA, et les outils téléchargés par le lanceur gardent leurs propres licences.",
   "support_version": "Version du lanceur {0}",
   "busy_working": "En cours…",
   "dlg_plan": "Le lanceur va :",

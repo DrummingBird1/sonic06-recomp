@@ -85,6 +85,32 @@ namespace Sonic06Launcher
         public string StateGlyph => ready ? "" : "";
         public Brush StateBrush => (Brush)FindResource(ready ? "Good" : "Warn");
         public string VersionText => Loc.I.F("support_version", typeof(MainWindow).Assembly.GetName().Version.ToString(3));
+        public ImageSource HeroArt { get; private set; }
+        public ImageSource LogoArt { get; private set; }
+        // The hero picture's layer is always left to right, so the logo on it is never mirrored. The picture
+        // goes on the side away from the text, and fades out on the edge next to it.
+        bool Rtl => Loc.I.Flow == FlowDirection.RightToLeft;
+        public GridLength[] HeroCols => Rtl
+            ? new[] { new GridLength(1.6, GridUnitType.Star), new GridLength(1, GridUnitType.Star) }
+            : new[] { new GridLength(1, GridUnitType.Star), new GridLength(1.6, GridUnitType.Star) };
+        public int HeroColumn => Rtl ? 0 : 1;
+        public Brush HeroFade
+        {
+            get
+            {
+                var rtl = Rtl;
+                var b = new LinearGradientBrush { StartPoint = new Point(rtl ? 1 : 0, 0), EndPoint = new Point(rtl ? 0 : 1, 0) };
+                b.GradientStops.Add(new GradientStop(Color.FromArgb(0, 0, 0, 0), 0));
+                b.GradientStops.Add(new GradientStop(Color.FromArgb(160, 0, 0, 0), 0.18));
+                b.GradientStops.Add(new GradientStop(Color.FromArgb(255, 0, 0, 0), 0.42));
+                b.Freeze();
+                return b;
+            }
+        }
+        public bool HasHeroArt => HeroArt != null;
+        public bool NoHeroArt => HeroArt == null;
+        public bool HasLogoArt => LogoArt != null;
+        public bool NoLogoArt => LogoArt == null;
 
         public MainWindow()
         {
@@ -92,7 +118,8 @@ namespace Sonic06Launcher
             setup = new Setup(cfg, Log, Progress);
             Settings = GameSettings.Load(cfg);
             Settings.PropertyChanged += (s, e) => { if (e.PropertyName == nameof(GameSettings.Fullscreen)) N(nameof(WindowSizeEnabled)); };
-            Loc.I.PropertyChanged += (s, e) => { RefreshStatus(); N(nameof(PlayLabel)); N(nameof(VersionText)); N(nameof(UiLanguage)); };
+            Loc.I.PropertyChanged += (s, e) => { RefreshStatus(); N(nameof(PlayLabel)); N(nameof(VersionText)); N(nameof(UiLanguage));
+                                           N(nameof(HeroFade)); N(nameof(HeroCols)); N(nameof(HeroColumn)); };
             InitializeComponent();
             DataContext = this;
             Loaded += (s, e) => RefreshStatus();
@@ -145,8 +172,13 @@ namespace Sonic06Launcher
             Status.Clear();
             foreach (var i in setup.Check()) Status.Add(i);
             ready = setup.ReadyToPlay;
+            // The disc's pictures appear once the disc is copied, without a restart.
+            if (HeroArt == null) HeroArt = DiscArt.Hero;
+            if (LogoArt == null) LogoArt = DiscArt.Logo;
             foreach (var p in new[] { nameof(ReadyToPlay), nameof(SetupNeeded), nameof(CanPlay), nameof(PlayLabel),
-                                      nameof(StateTitle), nameof(StateDetail), nameof(StateGlyph), nameof(StateBrush) })
+                                      nameof(StateTitle), nameof(StateDetail), nameof(StateGlyph), nameof(StateBrush),
+                                      nameof(HeroArt), nameof(LogoArt), nameof(HasHeroArt), nameof(NoHeroArt),
+                                      nameof(HasLogoArt), nameof(NoLogoArt) })
                 N(p);
         }
 

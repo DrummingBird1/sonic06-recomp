@@ -115,7 +115,7 @@
   "support_report_desc": "PC の仕様、セットアップの状態、最近のゲームログを入れた zip をデスクトップに保存します。ゲームのファイルは含まれず、ユーザーフォルダーは伏せられます。",
   "support_logs": "ログフォルダーを開く",
   "support_about": "このアプリについて",
-  "support_about_text": "sonic06-recomp はファンによる非公式の移植で、SEGA とは関係がなく、SEGA の承認も受けていません。コードは MIT ライセンスです。ゲームは SEGA のものであり、ランチャーがダウンロードするツールはそれぞれのライセンスに従います。",
+  "support_about_text": "Soleanna (sonic06-recomp) はファンによる非公式の移植で、SEGA とは関係がなく、SEGA の承認も受けていません。コードは MIT ライセンスです。ゲームは SEGA のものであり、ランチャーがダウンロードするツールはそれぞれのライセンスに従います。",
   "support_version": "ランチャー バージョン {0}",
   "busy_working": "処理中…",
   "dlg_plan": "ランチャーは次を行います:",

@@ -122,7 +122,7 @@
   "support_report_desc": "A zip on your desktop with your PC's specs, the setup status and the last game logs. No game files, and your Windows user folder is hidden.",
   "support_logs": "Open the logs folder",
   "support_about": "About",
-  "support_about_text": "sonic06-recomp is an unofficial, fan-made port, not affiliated with or endorsed by SEGA. Its code is under the MIT license. The game belongs to SEGA, and the tools the launcher downloads keep their own licenses.",
+  "support_about_text": "Soleanna (sonic06-recomp) is an unofficial, fan-made port, not affiliated with or endorsed by SEGA. Its code is under the MIT license. The game belongs to SEGA, and the tools the launcher downloads keep their own licenses.",
   "support_version": "Launcher version {0}",
   "busy_working": "Working…",
 

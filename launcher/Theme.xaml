@@ -1,22 +1,26 @@
 <ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
                     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
 
-    <!-- Palette: a dark slate base with a blue to cyan accent. No artwork from
-         the game: the launcher ships nothing of it. -->
-    <Color x:Key="BgColor">#0E1116</Color>
-    <Color x:Key="SidebarColor">#12161D</Color>
-    <Color x:Key="CardColor">#181D26</Color>
-    <Color x:Key="CardHoverColor">#1E2430</Color>
-    <Color x:Key="BorderColor">#273040</Color>
-    <Color x:Key="AccentColor">#3B82F6</Color>
-    <Color x:Key="Accent2Color">#22D3EE</Color>
+    <!-- Palette: Soleanna at dusk. A deep navy base, Sonic's blue for the
+         controls, and the setting sun (amber to red) for the one button that
+         matters. No artwork from the game ships with the launcher: the pictures
+         it shows come from the player's own disc (DiscArt.cs). -->
+    <Color x:Key="BgColor">#0A0F1F</Color>
+    <Color x:Key="SidebarColor">#0C1226</Color>
+    <Color x:Key="CardColor">#121A33</Color>
+    <Color x:Key="CardHoverColor">#18213F</Color>
+    <Color x:Key="BorderColor">#233057</Color>
+    <Color x:Key="AccentColor">#2563EB</Color>
+    <Color x:Key="Accent2Color">#38BDF8</Color>
+    <Color x:Key="SunColor">#F59E0B</Color>
+    <Color x:Key="Sun2Color">#E5484D</Color>
     <SolidColorBrush x:Key="Bg" Color="{StaticResource BgColor}"/>
     <SolidColorBrush x:Key="Sidebar" Color="{StaticResource SidebarColor}"/>
     <SolidColorBrush x:Key="Card" Color="{StaticResource CardColor}"/>
     <SolidColorBrush x:Key="CardHover" Color="{StaticResource CardHoverColor}"/>
     <SolidColorBrush x:Key="Line" Color="{StaticResource BorderColor}"/>
     <SolidColorBrush x:Key="Text" Color="#F1F3F7"/>
-    <SolidColorBrush x:Key="SubText" Color="#9AA4B5"/>
+    <SolidColorBrush x:Key="SubText" Color="#9FB0D0"/>
     <SolidColorBrush x:Key="Accent" Color="{StaticResource AccentColor}"/>
     <SolidColorBrush x:Key="Good" Color="#22C55E"/>
     <SolidColorBrush x:Key="Warn" Color="#F59E0B"/>
@@ -25,12 +29,21 @@
         <GradientStop Color="{StaticResource AccentColor}" Offset="0"/>
         <GradientStop Color="{StaticResource Accent2Color}" Offset="1"/>
     </LinearGradientBrush>
-    <LinearGradientBrush x:Key="HeroGradient" StartPoint="0,0" EndPoint="1,1">
-        <GradientStop Color="#1D4ED8" Offset="0"/>
-        <GradientStop Color="#0E7490" Offset="0.55"/>
-        <GradientStop Color="#0B1220" Offset="1"/>
+    <LinearGradientBrush x:Key="SunGradient" StartPoint="0,0" EndPoint="1,1">
+        <GradientStop Color="{StaticResource SunColor}" Offset="0"/>
+        <GradientStop Color="{StaticResource Sun2Color}" Offset="1"/>
     </LinearGradientBrush>
-
+    <!-- The hero card without a disc: sky blue at the top, a low sun on the right. -->
+    <LinearGradientBrush x:Key="HeroGradient" StartPoint="0,0" EndPoint="1,1">
+        <GradientStop Color="#1E40AF" Offset="0"/>
+        <GradientStop Color="#1D3A8A" Offset="0.45"/>
+        <GradientStop Color="#0A0F1F" Offset="1"/>
+    </LinearGradientBrush>
+    <RadialGradientBrush x:Key="SunGlow">
+        <GradientStop Color="#C0F59E0B" Offset="0"/>
+        <GradientStop Color="#40E5484D" Offset="0.55"/>
+        <GradientStop Color="#00E5484D" Offset="1"/>
+    </RadialGradientBrush>
     <FontFamily x:Key="UiFont">Segoe UI Variable Text, Segoe UI</FontFamily>
     <FontFamily x:Key="IconFont">Segoe Fluent Icons, Segoe MDL2 Assets</FontFamily>
 
@@ -75,7 +88,7 @@
         <Setter Property="FontSize" Value="13"/>
         <Setter Property="Padding" Value="16,9"/>
         <Setter Property="Cursor" Value="Hand"/>
-        <Setter Property="Background" Value="#232A36"/>
+        <Setter Property="Background" Value="#1B2445"/>
         <Setter Property="BorderBrush" Value="{StaticResource Line}"/>
         <Setter Property="Template">
             <Setter.Value>
@@ -86,10 +99,10 @@
                     </Border>
                     <ControlTemplate.Triggers>
                         <Trigger Property="IsMouseOver" Value="True">
-                            <Setter TargetName="b" Property="Background" Value="#2B3442"/>
+                            <Setter TargetName="b" Property="Background" Value="#24305A"/>
                         </Trigger>
                         <Trigger Property="IsPressed" Value="True">
-                            <Setter TargetName="b" Property="Background" Value="#1C222C"/>
+                            <Setter TargetName="b" Property="Background" Value="#151D38"/>
                         </Trigger>
                         <Trigger Property="IsEnabled" Value="False">
                             <Setter TargetName="b" Property="Opacity" Value="0.45"/>
@@ -106,7 +119,7 @@
             <Setter.Value>
                 <ControlTemplate TargetType="Button">
                     <Grid>
-                        <Border x:Name="b" Background="{StaticResource AccentGradient}" CornerRadius="10"
+                        <Border x:Name="b" Background="{StaticResource SunGradient}" CornerRadius="10"
                                 Padding="{TemplateBinding Padding}">
                             <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
                         </Border>
@@ -142,7 +155,7 @@
                     </Border>
                     <ControlTemplate.Triggers>
                         <Trigger Property="IsMouseOver" Value="True">
-                            <Setter TargetName="b" Property="Background" Value="#222937"/>
+                            <Setter TargetName="b" Property="Background" Value="#1A2343"/>
                         </Trigger>
                     </ControlTemplate.Triggers>
                 </ControlTemplate>
@@ -171,10 +184,10 @@
                     </Border>
                     <ControlTemplate.Triggers>
                         <Trigger Property="IsMouseOver" Value="True">
-                            <Setter TargetName="b" Property="Background" Value="#1A202A"/>
+                            <Setter TargetName="b" Property="Background" Value="#141B35"/>
                         </Trigger>
                         <Trigger Property="IsChecked" Value="True">
-                            <Setter TargetName="b" Property="Background" Value="#1E2633"/>
+                            <Setter TargetName="b" Property="Background" Value="#18213F"/>
                             <Setter TargetName="bar" Property="Opacity" Value="1"/>
                             <Setter Property="Foreground" Value="{StaticResource Text}"/>
                         </Trigger>
@@ -198,8 +211,8 @@
                         </Grid.ColumnDefinitions>
                         <ContentPresenter VerticalAlignment="Center" Margin="0,0,16,0"/>
                         <Border x:Name="track" Grid.Column="1" Width="44" Height="24" CornerRadius="12"
-                                Background="#2A3240" BorderBrush="#3A4456" BorderThickness="1">
-                            <Ellipse x:Name="knob" Width="16" Height="16" Fill="#C8CFDA" HorizontalAlignment="Left" Margin="4,0"/>
+                                Background="#222C50" BorderBrush="#33406B" BorderThickness="1">
+                            <Ellipse x:Name="knob" Width="16" Height="16" Fill="#D5DDF0" HorizontalAlignment="Left" Margin="4,0"/>
                         </Border>
                     </Grid>
                     <ControlTemplate.Triggers>
@@ -223,7 +236,7 @@
         <Setter Property="Template">
             <Setter.Value>
                 <ControlTemplate TargetType="ToggleButton">
-                    <Border x:Name="b" Background="#202734" BorderBrush="{StaticResource Line}" BorderThickness="1" CornerRadius="8">
+                    <Border x:Name="b" Background="#18203D" BorderBrush="{StaticResource Line}" BorderThickness="1" CornerRadius="8">
                         <TextBlock Text="&#xE70D;" FontFamily="{StaticResource IconFont}" FontSize="10" Foreground="{StaticResource SubText}"
                                    HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,12,0"/>
                     </Border>
@@ -246,7 +259,7 @@
                     </Border>
                     <ControlTemplate.Triggers>
                         <Trigger Property="IsHighlighted" Value="True">
-                            <Setter TargetName="b" Property="Background" Value="#26303F"/>
+                            <Setter TargetName="b" Property="Background" Value="#1E2850"/>
                         </Trigger>
                         <Trigger Property="IsSelected" Value="True">
                             <Setter TargetName="b" Property="Background" Value="#1F3A63"/>
@@ -273,7 +286,7 @@
                                           ContentTemplate="{TemplateBinding SelectionBoxItemTemplate}"/>
                         <Popup IsOpen="{TemplateBinding IsDropDownOpen}" Placement="Bottom" AllowsTransparency="True"
                                Focusable="False" PopupAnimation="Fade">
-                            <Border Background="#1A202A" BorderBrush="{StaticResource Line}" BorderThickness="1" CornerRadius="8"
+                            <Border Background="#141B35" BorderBrush="{StaticResource Line}" BorderThickness="1" CornerRadius="8"
                                     Padding="4" Margin="0,4,0,0" MinWidth="{TemplateBinding ActualWidth}" MaxHeight="320">
                                 <ScrollViewer VerticalScrollBarVisibility="Auto">
                                     <ItemsPresenter/>
@@ -317,7 +330,7 @@
                                           Command="Slider.DecreaseLarge"/>
                         </Track.DecreaseRepeatButton>
                         <Track.IncreaseRepeatButton>
-                            <RepeatButton Style="{StaticResource SliderFill}" Background="#2E3746" Command="Slider.IncreaseLarge"/>
+                            <RepeatButton Style="{StaticResource SliderFill}" Background="#2A3560" Command="Slider.IncreaseLarge"/>
                         </Track.IncreaseRepeatButton>
                         <Track.Thumb>
                             <Thumb Style="{StaticResource SliderThumb}"/>
@@ -334,7 +347,7 @@
             <Setter.Value>
                 <ControlTemplate TargetType="ProgressBar">
                     <Grid>
-                        <Border x:Name="PART_Track" Background="#252D3A" CornerRadius="3"/>
+                        <Border x:Name="PART_Track" Background="#1E2748" CornerRadius="3"/>
                         <Border x:Name="PART_Indicator" Background="{StaticResource AccentGradient}" CornerRadius="3"
                                 HorizontalAlignment="Left"/>
                     </Grid>
@@ -348,7 +361,7 @@
         <Setter Property="Template">
             <Setter.Value>
                 <ControlTemplate TargetType="Thumb">
-                    <Border Background="#3A4456" CornerRadius="3"/>
+                    <Border Background="#33406B" CornerRadius="3"/>
                 </ControlTemplate>
             </Setter.Value>
         </Setter>

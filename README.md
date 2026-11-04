@@ -25,6 +25,8 @@ The launcher installs the rest after asking: LLVM, CMake, Ninja, Git, uv and Pow
 
 ## Getting started
 
+The launcher is called **Soleanna**, after the game's city. It ships no artwork of the game: once your disc is copied, it shows the pictures from the disc itself (`PS3_GAME/PIC0.PNG` and `ICON0.PNG`).
+
 Run `Launcher.exe` (or `Sonic06.cmd` in a checkout), open **Setup** and press **Set up everything**. It lists what it will do, then:
 
 1. installs the missing build tools,
