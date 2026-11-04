@@ -82,3 +82,5 @@ AGENTS.local.md
 launcher/bin/
 launcher/obj/
 deps/
+# What package_release.ps1 puts inside the release exe
+launcher/payload/

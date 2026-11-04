@@ -98,7 +98,7 @@ It speaks English, Hebrew, Spanish, French, German, Italian, Portuguese (Brazil)
 
 **Then**
 
-1. Download `sonic06-recomp-0.1.0-dcdfda8.zip` from the [release](https://github.com/DrummingBird1/sonic06-recomp/releases/tag/v0.1.0), unzip it, and run `Launcher.exe`. In a git checkout, run `Sonic06.cmd`, which builds the launcher first (it needs the .NET SDK).
+1. Download `Soleanna-0.1.0.exe` from the [release](https://github.com/DrummingBird1/sonic06-recomp/releases/tag/v0.1.0) and run it. It asks where to install (a `Soleanna` folder next to it, or one you pick), unpacks the build scripts there, adds a desktop shortcut and opens the launcher. The file is not signed, so Windows may warn about it first: **More info**, then **Run anyway**. Running it again opens your install, and a newer version offers to update it. In a git checkout, run `Sonic06.cmd` instead, which builds the launcher first (it needs the .NET SDK).
 2. Open **Setup** and press **Set up everything**. It lists what it will do and asks before it installs or downloads anything. Then it:
    - installs the missing build tools: LLVM, CMake, Ninja, Git, uv and PowerShell 7 with winget, and Microsoft's C runtime and Windows SDK (about 630 MB, with [xwin](https://github.com/Jake-Shadle/xwin)) once you accept Microsoft's license. Visual Studio is not needed; if you have it with the C++ tools, the build uses it.
    - copies your disc into `game/` and decrypts it with your RPCS3,

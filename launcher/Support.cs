@@ -15,13 +15,22 @@ namespace Sonic06Launcher
     {
         // Opened after a bug report is saved: a new issue, with the bug template.
         public const string IssuesUrl = "https://github.com/DrummingBird1/sonic06-recomp/issues/new?template=bug.md";
+        // An install from the release exe updates from the next release exe (Installer.cs).
+        public const string ReleasesUrl = "https://github.com/DrummingBird1/sonic06-recomp/releases/latest";
 
-        /// <summary>git pull, and when anything came in, the toolkit, the lift and the build again.</summary>
+        /// <summary>
+        /// A checkout: git pull, and when anything came in, the toolkit, the lift and the build again.
+        /// An install: the releases page; the new exe updates the folder, and the launcher then builds again.
+        /// </summary>
         public static async Task Update(Setup setup, Action<string> log)
         {
-            var git = Tools.Git() ?? throw new InvalidOperationException("Git is not installed.");
             if (!Directory.Exists(Workspace.P(".git")))
-                throw new InvalidOperationException("Updates need a git checkout of the project (git clone).");
+            {
+                log("Installed from a release: opening " + ReleasesUrl);
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(ReleasesUrl) { UseShellExecute = true });
+                return;
+            }
+            var git = Tools.Git() ?? throw new InvalidOperationException("Git is not installed.");
             var before = Runner.Capture(git, "rev-parse HEAD");
             var rc = await Runner.Run(git, "pull --ff-only", log);
             if (rc != 0) throw new InvalidOperationException($"git pull failed (exit code {rc}).");
@@ -107,7 +116,10 @@ namespace Sonic06Launcher
             b.AppendLine("GPU: " + Wmi("SELECT Name, DriverVersion FROM Win32_VideoController",
                                          o => $"{o["Name"]} (driver {o["DriverVersion"]})"));
             var git = Tools.Git();
-            if (git != null)
+            var release = Workspace.P(Installer.VersionFile);
+            if (!Directory.Exists(Workspace.P(".git")) && File.Exists(release))
+                b.AppendLine("Release: " + File.ReadAllText(release).Trim());
+            else if (git != null)
             {
                 b.AppendLine("Project commit: " + Runner.Capture(git, "rev-parse --short HEAD"));
                 if (Directory.Exists(Workspace.P("work", "ps3recomp", ".git")))

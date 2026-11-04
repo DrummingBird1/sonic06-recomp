@@ -25,14 +25,14 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 
 
 def find_ffmpeg():
-    """The FFmpeg 8 DLLs: the launcher's setting, its download, or FFmpeg's."""
+    """The FFmpeg 8 DLLs: the launcher's setting or its download."""
     dirs = []
     try:
         import json
         dirs.append(json.loads((ROOT / 'launcher.local.json').read_text(encoding='utf-8')).get('ffmpeg', ''))
     except (OSError, ValueError):
         pass
-    dirs += [str(ROOT / 'deps' / 'ffmpeg' / 'bin'), r'<FFmpeg folder>']
+    dirs.append(str(ROOT / 'deps' / 'ffmpeg' / 'bin'))
     return next((d for d in dirs if d and list(pathlib.Path(d).glob('avcodec-*.dll'))), '')
 
 

@@ -11,6 +11,7 @@ A work in progress, published so others can try it and help. It contains no game
 - **The launcher (Soleanna):** copies your disc, decrypts it with your RPCS3, installs the build tools, downloads FFmpeg, SDL2 and ps3recomp, and builds the game. Ten languages, updates, and a bug report.
 - **Graphics:** window or borderless fullscreen, internal resolution with real supersampling above the window, four upscaling filters, sharpening, FXAA, texture filtering, brightness, saturation and contrast, and presets.
 - **Controls:** controllers through SDL2 (Xbox, DualShock 4, DualSense, Switch Pro), not yet tried with a real controller. Keyboard and mouse with a PC layout (WASD, Space to jump, Esc to pause, the mouse for the camera), remappable in the launcher.
+- **One file:** the release is `Soleanna-0.1.0.exe`. It installs itself into a folder you pick, with only what the build needs (the build scripts, `src`, the ps3recomp patches and the license), adds a desktop shortcut, and later updates that folder from a newer release file. It replaced the first upload, a zip of the whole repository.
 - **Known gaps:** tested on one Windows PC only; weaker graphics cards, AMD and Intel GPUs and a clean PC have not been tried.
 
 The launcher was numbered 0.3 to 0.5 while it was private; this is its first public version, so it starts again at 0.1.0.

@@ -127,7 +127,22 @@ namespace Sonic06Launcher
                                            N(nameof(HeroFade)); N(nameof(HeroCols)); N(nameof(HeroColumn)); };
             InitializeComponent();
             DataContext = this;
-            Loaded += (s, e) => RefreshStatus();
+            Loaded += (s, e) => { RefreshStatus(); OfferBuildAfterUpdate(); };
+        }
+
+        // The release exe updated this install (Installer.cs). The game is still built from the
+        // old source, so the marker stays until a build after the update succeeds.
+        async void OfferBuildAfterUpdate()
+        {
+            var marker = Workspace.P(Installer.UpdateMarker);
+            if (!File.Exists(marker)) return;
+            if (!Dialog.Show(this, Loc.I["support_update"], Loc.I.F("update_rebuild", File.ReadAllText(marker).Trim()), true, yesNo: true)) return;
+            await RunBusy(async () =>
+            {
+                if (!setup.HasSdl2) await setup.DownloadSdl2();
+                await setup.Build(resetToolkit: true);
+                File.Delete(marker);
+            });
         }
 
         // ---- window chrome ---------------------------------------------------
@@ -247,7 +262,12 @@ namespace Sonic06Launcher
         async void OnDecrypt(object s, RoutedEventArgs e) => await RunBusy(() => setup.Decrypt());
         async void OnDownloadFfmpeg(object s, RoutedEventArgs e) => await RunBusy(() => setup.DownloadFfmpeg());
         async void OnBuild(object s, RoutedEventArgs e) => await RunBusy(() => setup.Build());
-        async void OnUpdate(object s, RoutedEventArgs e) => await RunBusy(() => Support.Update(setup, Log));
+        async void OnUpdate(object s, RoutedEventArgs e)
+        {
+            // An install from the release exe updates from the next one; Support.Update opens its page.
+            if (!Directory.Exists(Workspace.P(".git"))) Dialog.Show(this, Loc.I["support_update"], Loc.I["update_release"], false);
+            await RunBusy(() => Support.Update(setup, Log));
+        }
 
         async Task<bool> ChooseIso()
         {
@@ -534,17 +554,20 @@ namespace Sonic06Launcher
     {
         public static bool Show(Window owner, string title, string text, bool ask, bool yesNo = false)
         {
+            // Without an owner (the installer, before the main window) the theme comes from the application.
+            Func<string, object> R = k => owner != null ? owner.FindResource(k) : Application.Current.FindResource(k);
             var w = new Window
             {
-                Owner = owner, WindowStyle = WindowStyle.None, ResizeMode = ResizeMode.NoResize, SizeToContent = SizeToContent.WidthAndHeight,
-                WindowStartupLocation = WindowStartupLocation.CenterOwner, ShowInTaskbar = false, Background = (Brush)owner.FindResource("Card"),
-                BorderBrush = (Brush)owner.FindResource("Line"), BorderThickness = new Thickness(1), FlowDirection = Loc.I.Flow,
-                FontFamily = (FontFamily)owner.FindResource("UiFont"),
+                Owner = owner, Title = title, WindowStyle = WindowStyle.None, ResizeMode = ResizeMode.NoResize, SizeToContent = SizeToContent.WidthAndHeight,
+                WindowStartupLocation = owner != null ? WindowStartupLocation.CenterOwner : WindowStartupLocation.CenterScreen,
+                ShowInTaskbar = owner == null, Background = (Brush)R("Card"),
+                BorderBrush = (Brush)R("Line"), BorderThickness = new Thickness(1), FlowDirection = Loc.I.Flow,
+                FontFamily = (FontFamily)R("UiFont"),
             };
             bool result = false;
             var panel = new StackPanel { Margin = new Thickness(28, 24, 28, 22), MaxWidth = 520 };
-            panel.Children.Add(new TextBlock { Text = title, Style = (Style)owner.FindResource("H2") });
-            panel.Children.Add(new TextBlock { Text = text, Style = (Style)owner.FindResource("Sub"), FontSize = 13, Margin = new Thickness(0, 0, 0, 22) });
+            panel.Children.Add(new TextBlock { Text = title, Style = (Style)R("H2") });
+            panel.Children.Add(new TextBlock { Text = text, Style = (Style)R("Sub"), FontSize = 13, Margin = new Thickness(0, 0, 0, 22) });
             var buttons = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
             if (ask)
             {
@@ -553,7 +576,7 @@ namespace Sonic06Launcher
                 buttons.Children.Add(no);
             }
             var ok = new Button { Content = Loc.I[ask && yesNo ? "common_yes" : "common_ok"], MinWidth = 96, IsDefault = true,
-                                  Style = (Style)owner.FindResource("PrimaryButton") };
+                                  Style = (Style)R("PrimaryButton") };
             ok.Click += (s, e) => { result = true; w.Close(); };
             buttons.Children.Add(ok);
             panel.Children.Add(buttons);

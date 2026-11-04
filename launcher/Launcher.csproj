@@ -43,4 +43,12 @@
     <Resource Include="logo.png" />
   </ItemGroup>
 
+  <!-- The release exe: the build's source and its version inside, for Installer.cs.
+       tools/package_release.ps1 writes them to payload\ and builds again; a developer
+       build has no payload\ and runs in its checkout. -->
+  <ItemGroup Condition="Exists('payload\payload.zip')">
+    <EmbeddedResource Include="payload\payload.zip" LogicalName="payload.zip" />
+    <EmbeddedResource Include="payload\payload.version" LogicalName="payload.version" />
+  </ItemGroup>
+
 </Project>

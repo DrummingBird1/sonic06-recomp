@@ -18,15 +18,13 @@ namespace Sonic06Launcher
         ///   --play &lt;seconds&gt; out.txt              the game with the saved settings, then its window size
         ///   --setup &lt;iso&gt; &lt;rpcs3.exe&gt; log.txt     "Set up everything" without dialogs (tools installed)
         ///   --install-winsysroot --accept-microsoft-license log.txt
+        /// Outside a checkout or an install, the release exe installs itself (Installer.cs):
+        ///   --install &lt;folder&gt;                     the same without dialogs
         /// </summary>
         [STAThread]
         static int Main(string[] args)
         {
-            if (!Workspace.Find())
-            {
-                MessageBox.Show("Launcher.exe has to be in the sonic06-recomp folder (next to tools\\ and src\\).", "sonic06-recomp");
-                return 1;
-            }
+            if (!Workspace.Find()) return Installer.Run(args);
             if (args.Length == 2 && args[0] == "--check")
             {
                 var s = new Setup(Config.Load(), _ => { }, (_, __) => { });

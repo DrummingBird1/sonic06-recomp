@@ -180,5 +180,12 @@
   "key_cam_right": "Caméra à droite",
   "key_cross": "✕ (sauter)",
   "keys_mouse_invert_x": "Inverser gauche et droite",
-  "keys_mouse_invert_y": "Inverser haut et bas"
+  "keys_mouse_invert_y": "Inverser haut et bas",
+  "install_title": "Installer Soleanna",
+  "install_where": "Soleanna sera installé dans :\n{0}\n\nLe dossier reçoit maintenant les scripts de compilation, puis le jeu que vous compilez à partir de votre propre copie. Gardez-y environ 10 Go libres.\n\nOui : installer ici. Non : choisir un autre dossier.",
+  "install_choose": "Choisissez où installer Soleanna. Un dossier Soleanna est créé dans le dossier choisi.",
+  "install_update": "Soleanna est installé dans :\n{0}\n\nCe fichier est la version {1}. Mettre l'installation à jour vers cette version ? Le disque, la compilation et vos réglages sont conservés, puis le lanceur propose de recompiler le jeu.",
+  "install_failed": "L'installation n'est pas allée au bout : {0}\n\nSi Soleanna est ouvert, fermez-le et relancez ce fichier.",
+  "update_rebuild": "Soleanna a été mis à jour vers {0}, mais le jeu est encore compilé à partir de la version précédente. Le recompiler maintenant ? Cela prend à peu près autant de temps que la première compilation.",
+  "update_release": "Cette copie a été installée depuis un fichier de version. La page des versions s'ouvre : téléchargez le nouveau fichier Soleanna et lancez-le. Il met ce dossier à jour, puis le lanceur propose de recompiler le jeu."
 }

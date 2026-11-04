@@ -1,8 +1,8 @@
-# When a version tag (v*) is pushed: build the release zip from that commit with
-# tools/package_release.ps1 (the tracked source, Launcher.exe at its root, refused if
-# anything from the game is in it) and attach it to the tag's release. A release
+# When a version tag (v*) is pushed: build the release exe from that commit with
+# tools/package_release.ps1 (the launcher with an allow-list of build files inside,
+# refused if anything else is in it) and attach it to the tag's release. A release
 # that doesn't exist yet is created as a draft, to be written and published by hand.
-name: Release zip
+name: Release exe
 
 on:
   push:
@@ -12,11 +12,11 @@ permissions:
   contents: write
 
 jobs:
-  zip:
+  exe:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Build the zip
+      - name: Build the exe
         shell: pwsh
         run: pwsh -NoProfile -File tools/package_release.ps1
       - name: Attach it to the release
@@ -25,10 +25,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
         run: |
-          $zip = Get-ChildItem dist -Filter *.zip | Select-Object -First 1
+          $exe = Get-ChildItem dist -Filter Soleanna-*.exe | Select-Object -First 1
           gh release view $env:TAG *> $null
           if ($LASTEXITCODE -ne 0) {
             gh release create $env:TAG --draft --verify-tag --title "Soleanna $($env:TAG.TrimStart('v'))" --notes "Draft made by the release workflow: write the notes, then publish."
           }
-          gh release upload $env:TAG $zip.FullName --clobber
-          "attached $($zip.Name), sha256 $((Get-FileHash $zip.FullName -Algorithm SHA256).Hash.ToLower())"
+          gh release upload $env:TAG $exe.FullName --clobber
+          "attached $($exe.Name), sha256 $((Get-FileHash $exe.FullName -Algorithm SHA256).Hash.ToLower())"

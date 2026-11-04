@@ -200,5 +200,12 @@
   "key_start": "START",
   "key_select": "SELECT",
   "keys_mouse_invert_x": "Invert left and right",
-  "keys_mouse_invert_y": "Invert up and down"
+  "keys_mouse_invert_y": "Invert up and down",
+  "install_title": "Install Soleanna",
+  "install_where": "Soleanna will be installed in:\n{0}\n\nThe folder gets the build scripts now, and later the game you build from your own copy. Keep about 10 GB free there.\n\nYes: install here. No: choose another folder.",
+  "install_choose": "Choose where to install Soleanna. A Soleanna folder is made inside the folder you pick.",
+  "install_update": "Soleanna is installed in:\n{0}\n\nThis file is version {1}. Update the install to it? Your disc, your build and your settings stay, and the launcher then offers to build the game again.",
+  "install_failed": "The install did not finish: {0}\n\nIf Soleanna is open, close it and run this file again.",
+  "update_rebuild": "Soleanna was updated to {0}, but the game is still built from the previous version. Build it again now? It takes about as long as the first build.",
+  "update_release": "This copy was installed from a release file. The releases page opens now: download the new Soleanna file and run it. It updates this folder, and the launcher then offers to build the game again."
 }

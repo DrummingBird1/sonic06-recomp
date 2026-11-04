@@ -11,6 +11,9 @@
    and the launcher's own screenshots. Game screenshots go to releases, not git.
 4. The launcher's translations: every file parses, has no key that en.json lacks
    (a typo would silently fall back to English), and keeps en.json's {0} placeholders.
+5. No path from someone's own PC in a text file: a user profile (C:\\Users\\name) or a
+   folder on another drive (D: to Z:). Machine paths belong in AGENTS.local.md and
+   launcher.local.json, which stay out of git.
 """
 import json, pathlib, re, subprocess, sys
 
@@ -21,6 +24,19 @@ MEDIA = re.compile(r"\.(png|jpe?g|gif|webp|bmp|mp4|webm|mov|avi|ico)$", re.I)
 MEDIA_OK = ("docs/images/", "launcher/")
 MAX_BYTES = 4 * 1024 * 1024
 PLACEHOLDER = re.compile(r"\{\d+\}")
+LOCAL_PATH = re.compile(r"\b[A-Za-z]:[\\/]+Users[\\/]+[A-Za-z0-9._-]+|\b[D-Zd-z]:[\\/]+[A-Za-z0-9_]")
+TEXT = re.compile(r"\.(md|txt|py|ps1|cmd|bat|cs|xaml|json|ya?ml|c|cpp|h|hpp|cmake|patch|csproj|manifest)$|CMakeLists\.txt$", re.I)
+
+
+def text_problems(files):
+    """files: {path: text}. A path to someone's own folders."""
+    bad = []
+    for p, text in files.items():
+        for n, line in enumerate(text.splitlines(), 1):
+            m = LOCAL_PATH.search(line)
+            if m:
+                bad.append(f"{p}:{n}: '{m[0]}' is a path on someone's own PC")
+    return bad
 
 
 def path_problems(paths, size_of):
@@ -71,9 +87,12 @@ def selftest():
     fails = {p for p in must_fail if path_problems([p], lambda q: sizes.get(q, 10))}
     passes = {p for p in must_pass if not path_problems([p], lambda q: sizes.get(q, 10))}
     strings = string_problems({"en": {"a": "x {0}"}, "de": {"a": "y", "typo": "z"}, "fr": ValueError("bad")})
-    ok = fails == set(must_fail) and passes == set(must_pass) and len(strings) == 3
+    local_bad = text_problems({"a.md": r"see C:\Users\someone\Desktop", "b.ps1": r"$x = 'E:\Games\iso'", "c.py": "D:/stuff/x"})
+    local_ok = text_problems({"d.md": r"C:\Program Files\LLVM\bin and %USERPROFILE% and C:\Windows\Fonts"})
+    ok = (fails == set(must_fail) and passes == set(must_pass) and len(strings) == 3
+          and len(local_bad) == 3 and not local_ok)
     print(f"selftest: {len(fails)}/{len(must_fail)} bad paths caught, {len(passes)}/{len(must_pass)} good paths let through, "
-          f"{len(strings)}/3 string problems caught")
+          f"{len(strings)}/3 string problems caught, {len(local_bad)}/3 local paths caught, {len(local_ok)} false alarms")
     return 0 if ok else 1
 
 
@@ -84,6 +103,12 @@ def main():
     paths = [p for p in paths if p]
     bad = path_problems(paths, lambda p: (ROOT / p).stat().st_size if (ROOT / p).exists() else 0)
     bad += string_problems(load_tables())
+    texts = {}
+    for p in paths:
+        # this file holds examples of what it looks for
+        if TEXT.search(p) and (ROOT / p).exists() and p != "tools/ci/check_repo.py":
+            texts[p] = (ROOT / p).read_text(encoding="utf-8", errors="replace")
+    bad += text_problems(texts)
     for b in bad:
         print("::error::" + b if "GITHUB_ACTIONS" in __import__("os").environ else b)
     print(f"{len(paths)} tracked files, {len(bad)} problems")

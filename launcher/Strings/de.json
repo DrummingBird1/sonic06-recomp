@@ -180,5 +180,12 @@
   "key_cam_right": "Kamera rechts",
   "key_cross": "✕ (Springen)",
   "keys_mouse_invert_x": "Links und rechts umkehren",
-  "keys_mouse_invert_y": "Oben und unten umkehren"
+  "keys_mouse_invert_y": "Oben und unten umkehren",
+  "install_title": "Soleanna installieren",
+  "install_where": "Soleanna wird installiert in:\n{0}\n\nDer Ordner bekommt jetzt die Build-Skripte und später das Spiel, das du aus deiner eigenen Kopie baust. Lass dort etwa 10 GB frei.\n\nJa: hier installieren. Nein: einen anderen Ordner wählen.",
+  "install_choose": "Wähle, wo Soleanna installiert wird. Im gewählten Ordner wird ein Ordner Soleanna angelegt.",
+  "install_update": "Soleanna ist installiert in:\n{0}\n\nDiese Datei ist Version {1}. Die Installation darauf aktualisieren? Disc, Build und Einstellungen bleiben, danach bietet der Launcher an, das Spiel neu zu bauen.",
+  "install_failed": "Die Installation wurde nicht abgeschlossen: {0}\n\nWenn Soleanna geöffnet ist, schließe es und starte diese Datei erneut.",
+  "update_rebuild": "Soleanna wurde auf {0} aktualisiert, aber das Spiel ist noch aus der vorherigen Version gebaut. Jetzt neu bauen? Das dauert etwa so lange wie der erste Build.",
+  "update_release": "Diese Kopie wurde aus einer Release-Datei installiert. Die Release-Seite öffnet sich jetzt: Lade die neue Soleanna-Datei herunter und starte sie. Sie aktualisiert diesen Ordner, danach bietet der Launcher an, das Spiel neu zu bauen."
 }
