@@ -1,0 +1,34 @@
+# When a version tag (v*) is pushed: build the release zip from that commit with
+# tools/package_release.ps1 (the tracked source, Launcher.exe at its root, refused if
+# anything from the game is in it) and attach it to the tag's release. A release
+# that doesn't exist yet is created as a draft, to be written and published by hand.
+name: Release zip
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  zip:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the zip
+        shell: pwsh
+        run: pwsh -NoProfile -File tools/package_release.ps1
+      - name: Attach it to the release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          $zip = Get-ChildItem dist -Filter *.zip | Select-Object -First 1
+          gh release view $env:TAG *> $null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $env:TAG --draft --verify-tag --title "Soleanna $($env:TAG.TrimStart('v'))" --notes "Draft made by the release workflow: write the notes, then publish."
+          }
+          gh release upload $env:TAG $zip.FullName --clobber
+          "attached $($zip.Name), sha256 $((Get-FileHash $zip.FullName -Algorithm SHA256).Hash.ToLower())"

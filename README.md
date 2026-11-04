@@ -20,6 +20,7 @@
   <a href="#getting-started">Getting started</a> ·
   <a href="#status">Status</a> ·
   <a href="#how-it-works">How it works</a> ·
+  <a href="#faq">FAQ</a> ·
   <a href="#reporting-a-problem">Report a problem</a>
 </p>
 
@@ -163,15 +164,65 @@ flowchart LR
 
 The game's PowerPC code is translated ahead of time into C and compiled for x86-64. The PS3's system libraries are reimplemented at a high level, its SPU programs run on host threads, and the RSX graphics commands go through a Direct3D 12 renderer. The port builds on [ps3recomp](https://github.com/sp00nznet/ps3recomp), with 47 changes of its own kept as patches in [`patches/ps3recomp`](patches/ps3recomp). Everything made from the game stays in `game/`, `work/` and `build/` on your PC, and git ignores them.
 
+## FAQ
+
+<details>
+<summary><b>Is this legal?</b></summary>
+
+The repository holds only the project's own code and patches: no SEGA code and no game assets. You need your own copy of the game, and the launcher builds it on your PC. This isn't legal advice, and the project isn't affiliated with or endorsed by SEGA.
+</details>
+
+<details>
+<summary><b>Where do I get the game files?</b></summary>
+
+From your own PS3 disc (BLES00028), as an ISO or a folder. Please don't ask for game files, or share them, in issues or discussions.
+</details>
+
+<details>
+<summary><b>Why not just use RPCS3?</b></summary>
+
+RPCS3 is excellent, and this project uses it to decrypt your disc. A native port runs without an emulator, so it can be changed at the source level: so far PC options like supersampling, a mouse camera and remappable keys, and later fixes and mods.
+</details>
+
+<details>
+<summary><b>Does it work with the US disc, or the Xbox 360 version?</b></summary>
+
+Only the PS3 BLES00028 release has been tried. Other PS3 releases may need changes; the Xbox 360 version is a different program altogether.
+</details>
+
+<details>
+<summary><b>Linux, Steam Deck, Mac?</b></summary>
+
+Windows 10 and 11 only for now: the renderer is Direct3D 12, and the build uses the Windows toolchain. Nobody has tried it under Proton yet.
+</details>
+
+<details>
+<summary><b>Does it fix the original's bugs or loading times?</b></summary>
+
+Not yet. It runs the original game logic, so the game's own bugs are still there, and loading times haven't been compared with the PS3.
+</details>
+
+<details>
+<summary><b>Will it run on my PC?</b></summary>
+
+It has been tested on one PC: an RTX 4070 SUPER, plus a short run on Intel UHD 770 graphics. You need 64-bit Windows 10 or 11, 8 GB of RAM or more and about 10 GB of disk. If you try it, a [hardware report](https://github.com/DrummingBird1/sonic06-recomp/issues/new?template=hardware.md) helps a lot, whether it worked or not.
+</details>
+
+<details>
+<summary><b>Was this made with AI?</b></summary>
+
+Yes, with a lot of help from Claude, and the commits say so. Every claim in this README and in the docs comes from a run, a log or a measurement.
+</details>
+
 ## Reporting a problem
 
 On the **Support** page, **Create a bug report** saves a zip on your desktop: your PC's specs, the setup status and the last game logs. It has no game files, and your Windows user folder is replaced by `%USERPROFILE%`. The launcher then opens a [new issue](https://github.com/DrummingBird1/sonic06-recomp/issues/new?template=bug.md): attach the zip, with what you did and what you saw.
 
 ## Contributing
 
-Start with [docs/HANDOFF.md](docs/HANDOFF.md), in Hebrew: the state of the project, the test recipes and the next steps. [docs/PHASE1.md](docs/PHASE1.md) is the history of every fix, with its measurements. The launcher's source is in `launcher/` (C#, .NET Framework 4.8: `dotnet build launcher -c Release`).
+The most useful help right now needs no code: a [hardware report](https://github.com/DrummingBird1/sonic06-recomp/issues/new?template=hardware.md) from your PC, or a stage played to the end. For code and translations, start with [CONTRIBUTING.md](CONTRIBUTING.md): building from source, where things are, the toolkit patches and the tests. [docs/HANDOFF.md](docs/HANDOFF.md) (in Hebrew) has the state of the project and the test recipes, and [docs/PHASE1.md](docs/PHASE1.md) the history of every fix, with its measurements.
 
-Keep game files, and anything derived from them, out of git: the ISO, `game/`, `work/` and the built executable.
+Keep game files, and anything derived from them, out of git: the ISO, `game/`, `work/` and the built executable. A check on every pull request looks for them.
 
 ## Credits
 

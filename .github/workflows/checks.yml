@@ -1,0 +1,28 @@
+# On every push to main and every pull request: the repository rules (no game files,
+# no oversized files, pictures only where they belong, valid translations), proved
+# able to fail first, and a build of the launcher. The game itself can't be built
+# here: that needs a disc.
+name: Checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: The checks can fail
+        run: python tools/ci/check_repo.py --selftest
+      - name: No game files, sizes, pictures, translations
+        run: python tools/ci/check_repo.py
+      - name: Build the launcher
+        run: dotnet build launcher -c Release -nologo
