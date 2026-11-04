@@ -1,0 +1,187 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: DrummingBird1 <1979036+DrummingBird1@users.noreply.github.com>
+Date: Wed, 4 Nov 2026 03:53:59 +0200
+Subject: [PATCH] sys_ppu_thread: a reclaimed slot's thread id is never given
+ out again
+
+Each create gets slot + 1 + PPU_THREAD_MAX * (earlier threads of that slot),
+so a late join on the id of a thread whose slot was reclaimed gets ESRCH
+instead of waiting on whatever thread has the slot now. The first thread of
+each slot keeps the old id. A join on a dead id is logged.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ runtime/syscalls/sys_ppu_thread.c | 48 ++++++++++++++++++++-----------
+ tests/test_ppu_thread_slots.c     | 29 ++++++++++++++-----
+ 2 files changed, 53 insertions(+), 24 deletions(-)
+
+diff --git a/runtime/syscalls/sys_ppu_thread.c b/runtime/syscalls/sys_ppu_thread.c
+index 9e64877a..761ae44b 100644
+--- a/runtime/syscalls/sys_ppu_thread.c
++++ b/runtime/syscalls/sys_ppu_thread.c
+@@ -131,7 +131,7 @@ static uint32_t stack_take(uint32_t size)
+  * dropped on every respawn without a join (about five threads a time), which lv2 absorbs in its far larger thread
+  * table; here the 64 slots were gone after a dozen deaths, sys_ppu_thread_create failed, and the game waited for ever
+  * on a thread it had never got. A thread nobody has joined by now is not going to be: take the oldest one's slot,
+- * as if it had been detached. A later join on it gets CELL_ESRCH. */
++ * as if it had been detached. A later join on it gets CELL_ESRCH: its tid is not given out again (s_slot_gen). */
+ static int reap_finished_slot(int from)
+ {
+     for (int n = 0; n < PPU_THREAD_MAX; n++) {
+@@ -172,12 +172,23 @@ static int find_free_slot(void)
+     return i;
+ }
+ 
+-/* Find thread by ID. The ID is the index + 1 (0 is invalid). */
++/* The ID is the slot + 1, plus PPU_THREAD_MAX for each earlier thread of that slot (0 is invalid). With the slot
++ * alone, a thread object Sonic destroys long after its thread ended (the stage teardown after a game over) joined the
++ * tid of a reclaimed slot, got whatever thread had the slot now, and waited for it for ever: a black screen with no
++ * sound. The first thread of each slot keeps the plain slot + 1. */
++static uint32_t s_slot_gen[PPU_THREAD_MAX];
++
++static int slot_of(uint64_t thread_id)
++{
++    return thread_id == 0 || thread_id > 0xFFFFFFFFu ? -1 : (int)((thread_id - 1) % PPU_THREAD_MAX);
++}
++
+ static ppu_thread_info* find_thread(uint64_t thread_id)
+ {
+-    if (thread_id == 0 || thread_id > PPU_THREAD_MAX) return NULL;
+-    ppu_thread_info* t = &g_ppu_threads[thread_id - 1];
+-    if (t->state == PPU_THREAD_STATE_FREE) return NULL;
++    int i = slot_of(thread_id);
++    if (i < 0) return NULL;
++    ppu_thread_info* t = &g_ppu_threads[i];
++    if (t->state == PPU_THREAD_STATE_FREE || t->ctx.thread_id != thread_id) return NULL;
+     return t;
+ }
+ 
+@@ -208,8 +219,9 @@ static int prio_start_enabled(void)
+ 
+ void ppu_thread_note_block(uint64_t tid)
+ {
+-    if (tid == 0 || tid > PPU_THREAD_MAX) return;
+-    int* blocked = &g_ppu_threads[tid - 1].blocked;
++    int i = slot_of(tid);
++    if (i < 0) return;
++    int* blocked = &g_ppu_threads[i].blocked;
+     /* Load first: the wait syscalls call this on every wait, and most threads blocked long ago. */
+     if (!__atomic_load_n(blocked, __ATOMIC_RELAXED))
+         __atomic_store_n(blocked, 1, __ATOMIC_RELEASE);
+@@ -435,9 +447,9 @@ uint64_t ppu_thread_register_main(void)
+ unsigned long long ppu_thread_cpu_us(unsigned tid)
+ {
+ #ifdef _WIN32
+-    if (tid < 2 || tid > PPU_THREAD_MAX) return 0;   /* main (tid 1) not in table */
+-    ppu_thread_info* t = &g_ppu_threads[tid - 1];
+-    if (t->state == PPU_THREAD_STATE_FREE || !t->host_thread) return 0;
++    if (tid < 2) return 0;   /* main (tid 1) not in table */
++    ppu_thread_info* t = find_thread(tid);
++    if (!t || !t->host_thread) return 0;
+     FILETIME c, e, k, u;
+     if (!GetThreadTimes(t->host_thread, &c, &e, &k, &u)) return 0;
+     ULARGE_INTEGER ku, uu;
+@@ -451,10 +463,9 @@ unsigned long long ppu_thread_cpu_us(unsigned tid)
+ /* Last syscall/HLE callsite of guest thread `tid` (see prof_pc). */
+ unsigned ppu_thread_prof_pc(unsigned tid)
+ {
+-    if (tid < 2 || tid > PPU_THREAD_MAX) return 0;
+-    ppu_thread_info* t = &g_ppu_threads[tid - 1];
+-    if (t->state == PPU_THREAD_STATE_FREE) return 0;
+-    return t->prof_pc;
++    if (tid < 2) return 0;
++    ppu_thread_info* t = find_thread(tid);
++    return t ? t->prof_pc : 0;
+ }
+ 
+ /* Profiler accessor: snapshot slot idx (0-based). Returns 1 if the slot holds
+@@ -473,7 +484,7 @@ int ppu_prof_snapshot(int idx, unsigned* tid, unsigned* cia, const char** name)
+         return s_prof_main_pc != 0;
+     }
+     if (t->state == PPU_THREAD_STATE_FREE) return 0;
+-    *tid  = (unsigned)(idx + 1);
++    *tid  = (unsigned)t->ctx.thread_id;
+     *cia  = t->prof_pc ? t->prof_pc : (unsigned)t->ctx.cia;
+     *name = t->name;
+     return 1;
+@@ -542,7 +553,7 @@ int64_t sys_ppu_thread_create(ppu_context* ctx)
+     /* Copy TOC from creating thread */
+     t->ctx.gpr[2] = ctx->gpr[2];
+ 
+-    uint64_t thread_id = (uint64_t)(slot + 1);
++    uint64_t thread_id = (uint64_t)slot + 1 + (uint64_t)PPU_THREAD_MAX * s_slot_gen[slot]++;
+     t->ctx.thread_id = thread_id;
+ 
+     t->state      = PPU_THREAD_STATE_RUNNING;
+@@ -753,6 +764,9 @@ int64_t sys_ppu_thread_join(ppu_context* ctx)
+     table_lock();
+     ppu_thread_info* t = find_thread(tid);
+     if (!t) {
++        { static int n = 0; if (slot_of(tid) >= 0 && PS3_LOG_FIRST(n, 8))
++            fprintf(stderr, "[SYS] ppu_thread_join(tid=%llu): no such thread (its slot now holds tid %llu) -> ESRCH\n",
++                    (unsigned long long)tid, (unsigned long long)g_ppu_threads[slot_of(tid)].ctx.thread_id); }
+         table_unlock();
+         return (int64_t)(int32_t)CELL_ESRCH;
+     }
+@@ -1292,7 +1306,7 @@ int64_t sys_ppu_thread_get_priority(ppu_context* ctx)
+ 
+     table_lock();
+     ppu_thread_info* t = find_thread(tid);
+-    if (!t && tid >= 1 && tid <= PPU_THREAD_MAX && g_ppu_threads[tid - 1].entry_addr != 0) {
++    if (!t && slot_of(tid) >= 0 && g_ppu_threads[slot_of(tid)].entry_addr != 0) {
+         /* A thread created by sys_ppu_thread_create that has exited and been freed (the slot keeps its entry address):
+          * it is gone (ESRCH). */
+         table_unlock();
+diff --git a/tests/test_ppu_thread_slots.c b/tests/test_ppu_thread_slots.c
+index 64c5c064..13040aed 100644
+--- a/tests/test_ppu_thread_slots.c
++++ b/tests/test_ppu_thread_slots.c
+@@ -99,7 +99,7 @@ int main(void)
+         int64_t rc = create(0, &tid);
+         if (rc != 0) { EXPECT_EQ(rc, 0); fprintf(stderr, "  create #%d (tid so far %d) failed\n", i + 1, ok); break; }
+         ok++;
+-        EXPECT_EQ(tid >= 2 && tid <= PPU_THREAD_MAX, 1);
++        EXPECT_EQ(tid >= 2 && (tid - 1) % PPU_THREAD_MAX != 0, 1);   /* never main's slot */
+         settle();
+     }
+     EXPECT_EQ(ok, 3 * PPU_THREAD_MAX);
+@@ -113,18 +113,33 @@ int main(void)
+     for (int i = 0; i < 1000 && used_slots(); i++) { struct timespec ts = { 0, 1000000 }; nanosleep(&ts, NULL); }
+     EXPECT_EQ(used_slots(), 0);
+ 
+-    /* 3. Negative control for the semantics: joinable threads (flags bit 0) that nobody joins keep their slot, so
+-     *    the table still fills up and the next create is refused with EAGAIN. */
+-    for (int i = 0; i < PPU_THREAD_MAX - 1; i++) EXPECT_EQ(create(1, NULL), 0);
++    /* 3. Joinable threads (flags bit 0) that nobody joins keep their slot until the table is full; then the next
++     *    create takes the slot of one of them, and that thread's id stays dead: a late join gets ESRCH, not the new
++     *    thread that has the slot now (Sonic's stage teardown joined such an id and waited for ever). */
++    uint64_t held[PPU_THREAD_MAX] = {0};
++    int reused = -1;
++    for (int i = 0; i < PPU_THREAD_MAX - 1; i++) EXPECT_EQ(create(1, &held[i]), 0);
+     settle();
+     EXPECT_EQ(used_slots(), PPU_THREAD_MAX - 1);             /* all FINISHED, none freed */
+-    EXPECT_EQ(create(1, NULL), (int64_t)(int32_t)CELL_EAGAIN);
+-    EXPECT_EQ(create(0, NULL), (int64_t)(int32_t)CELL_EAGAIN);
++    {
++        uint64_t fresh = 0;
++        EXPECT_EQ(create(1, &fresh), 0);                     /* reclaims a finished slot */
++        settle();
++        for (int i = 0; i < PPU_THREAD_MAX - 1; i++)
++            if ((held[i] - 1) % PPU_THREAD_MAX == (fresh - 1) % PPU_THREAD_MAX) reused = i;
++        EXPECT_EQ(reused >= 0, 1);
++        EXPECT_EQ(fresh != held[reused], 1);
++        ppu_context ctx; memset(&ctx, 0, sizeof(ctx));
++        ctx.gpr[3] = held[reused];
++        EXPECT_EQ(sys_ppu_thread_join(&ctx), (int64_t)(int32_t)CELL_ESRCH);
++        ctx.gpr[3] = fresh;
++        EXPECT_EQ(sys_ppu_thread_join(&ctx), 0);
++    }
+ 
+     /* 4. Joining one frees its slot for a new create. */
+     {
+         ppu_context ctx; memset(&ctx, 0, sizeof(ctx));
+-        ctx.gpr[3] = 5;            /* tid 5 */
++        ctx.gpr[3] = held[reused == 0 ? 1 : 0];
+         EXPECT_EQ(sys_ppu_thread_join(&ctx), 0);
+         EXPECT_EQ(create(1, NULL), 0);
+     }
