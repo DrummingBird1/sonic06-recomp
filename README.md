@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/images/banner.png" alt="sonic06-recomp: Sonic the Hedgehog (2006), PS3, recompiled to native PC" width="100%">
+  <img src="docs/images/banner.png" alt="Soleanna (sonic06-recomp): Sonic the Hedgehog (2006), PS3, recompiled to native PC" width="100%">
 </p>
 
 <p align="center">
@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  An unofficial PC port of the PlayStation 3 version of <b>Sonic the Hedgehog (2006)</b>, made by static recompilation.<br>
+  <b>Soleanna</b> (sonic06-recomp) is an unofficial PC port of the PlayStation 3 version of <b>Sonic the Hedgehog (2006)</b>, made by static recompilation.<br>
   No emulator at runtime, and no game files in this repository: the launcher builds the game on your PC from your own disc.
 </p>
 
@@ -64,7 +64,7 @@ What is in each version is in [CHANGELOG.md](CHANGELOG.md).
 
 ## The launcher
 
-The launcher is called **Soleanna**, after the game's city. It copies your disc, decrypts it with your RPCS3, installs the build tools, downloads FFmpeg, SDL2 and ps3recomp, builds the game, and starts it. It ships no artwork of the game: once your disc is copied, it shows the pictures from the disc itself.
+The project and its launcher are named **Soleanna**, after the game's city; `sonic06-recomp` is the repository's name. The launcher copies your disc, decrypts it with your RPCS3, installs the build tools, downloads FFmpeg, SDL2 and ps3recomp, builds the game, and starts it. It ships no artwork of the game: once your disc is copied, it shows the pictures from the disc itself.
 
 <table>
   <tr>

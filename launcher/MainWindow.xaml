@@ -38,14 +38,9 @@
                             </Border.Background>
                         </Border>
                         <StackPanel Orientation="Horizontal" FlowDirection="LeftToRight">
-                            <!-- A low sun over the sea: Soleanna's mark, drawn, not taken from the game. -->
-                            <Grid Width="40" Height="40">
-                                <Border CornerRadius="11" Background="{StaticResource HeroGradient}"/>
-                                <Ellipse Width="22" Height="22" Fill="{StaticResource SunGradient}" Margin="0,4,0,0"
-                                         HorizontalAlignment="Center" VerticalAlignment="Top"/>
-                                <Border Height="13" VerticalAlignment="Bottom" CornerRadius="0,0,11,11" Background="#E01E3A8A"/>
-                                <Border Height="2" VerticalAlignment="Bottom" Margin="7,0,7,7" CornerRadius="1" Background="#80F59E0B"/>
-                            </Grid>
+                            <!-- Soleanna's mark: a gold ring around a sunset on the sea, drawn, not taken from the game. -->
+                            <Image Source="pack://application:,,,/Launcher;component/logo.png" Width="40" Height="40"
+                                   RenderOptions.BitmapScalingMode="HighQuality"/>
                             <StackPanel Margin="12,0,0,0" VerticalAlignment="Center">
                                 <TextBlock Text="Soleanna" FontSize="17" FontWeight="Bold"/>
                                 <TextBlock Text="Sonic '06 · PC" Style="{StaticResource Sub}" FontSize="11"/>

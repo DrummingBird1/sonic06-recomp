@@ -38,4 +38,9 @@
     <EmbeddedResource Include="Strings\*.json" LogicalName="strings.%(Filename).json" />
   </ItemGroup>
 
+  <!-- Soleanna's logo for the sidebar, the same one as app.ico (drawn, nothing from the game). -->
+  <ItemGroup>
+    <Resource Include="logo.png" />
+  </ItemGroup>
+
 </Project>

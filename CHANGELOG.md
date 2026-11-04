@@ -1,4 +1,6 @@
-# Changelog
+# Soleanna changelog
+
+Soleanna is the project's name, and its launcher's; `sonic06-recomp` is the repository's.
 
 ## 0.1.0 (first public version)
 
