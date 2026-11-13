@@ -5,6 +5,11 @@ param(
   [string]$Ps3Recomp = ''   # default: the project's patched copy (setup_ps3recomp.ps1)
 )
 $ErrorActionPreference = 'Stop'
+# Python's text files and pipes default to the Windows ANSI code page. The
+# lifter writes an em dash into every chunk, which cp932 (Japanese) and cp949
+# (Korean) cannot encode, so the lift stopped there. UTF-8 mode makes every
+# locale write and print the same bytes.
+$env:PYTHONUTF8 = '1'
 $root = Split-Path -Parent $PSScriptRoot
 if (-not $Ps3Recomp) {
   $Ps3Recomp = Join-Path $root 'work\ps3recomp'
@@ -52,3 +57,8 @@ if ($LASTEXITCODE) { throw 'ppu_lifter failed' }
 
 & $py -I (Join-Path $PSScriptRoot 'patch_lift.py') $recomp
 if ($LASTEXITCODE) { throw 'patch_lift failed' }
+
+# Written last: the launcher redoes the lift when this is missing (a lift that
+# stopped half way) or names another toolkit tree (a lift made by an
+# incomplete or older ps3recomp copy).
+Set-Content (Join-Path $recomp 'lift-complete.txt') (git.exe -C $Ps3Recomp rev-parse 'HEAD^{tree}')

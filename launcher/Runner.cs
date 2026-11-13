@@ -11,6 +11,12 @@ namespace Sonic06Launcher
     /// <summary>Runs the scripts and tools the setup is made of, line by line into the log.</summary>
     static class Runner
     {
+        // pwsh colours its errors with ANSI escapes even into a pipe, and the log
+        // and bug reports showed them as "^[[31;1m" (issue #10).
+        static readonly System.Text.RegularExpressions.Regex Ansi =
+            new System.Text.RegularExpressions.Regex(@"\x1B\[[0-9;?]*[ -/]*[@-~]");
+        static string Plain(string line) => line.IndexOf('\x1B') < 0 ? line : Ansi.Replace(line, "");
+
         public static Task<int> Run(string file, string args, Action<string> onLine,
                                     IDictionary<string, string> env = null, string cwd = null)
         {
@@ -29,8 +35,8 @@ namespace Sonic06Launcher
             {
                 using (var p = new Process { StartInfo = psi })
                 {
-                    p.OutputDataReceived += (s, e) => { if (e.Data != null) onLine(e.Data); };
-                    p.ErrorDataReceived += (s, e) => { if (e.Data != null) onLine(e.Data); };
+                    p.OutputDataReceived += (s, e) => { if (e.Data != null) onLine(Plain(e.Data)); };
+                    p.ErrorDataReceived += (s, e) => { if (e.Data != null) onLine(Plain(e.Data)); };
                     p.Start();
                     p.BeginOutputReadLine();
                     p.BeginErrorReadLine();

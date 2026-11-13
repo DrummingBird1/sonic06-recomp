@@ -42,6 +42,8 @@ function Find-Vcvars {
   $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
   if (-not (Test-Path $vswhere)) { return '' }
   $vs = & $vswhere -latest -products * -property installationPath
+  # Nothing found prints nothing, and Join-Path would throw (issue #10).
+  if (-not $vs) { return '' }
   $bat = Join-Path "$vs" 'VC\Auxiliary\Build\vcvars64.bat'
   if (Test-Path $bat) { return $bat }
   return ''

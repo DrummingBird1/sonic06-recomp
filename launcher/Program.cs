@@ -17,6 +17,7 @@ namespace Sonic06Launcher
         ///   --report out.txt                       a bug report; its path into out.txt
         ///   --play &lt;seconds&gt; out.txt              the game with the saved settings, then its window size
         ///   --setup &lt;iso&gt; &lt;rpcs3.exe&gt; log.txt     "Set up everything" without dialogs (tools installed)
+        ///   --build log.txt                        only the build steps (toolkit, Python, lift, build), as Setup runs them
         ///   --install-winsysroot --accept-microsoft-license log.txt
         /// Outside a checkout or an install, the release exe installs itself (Installer.cs):
         ///   --install &lt;folder&gt;                     the same without dialogs
@@ -74,6 +75,8 @@ namespace Sonic06Launcher
                     log("SETUP OK");
                 });
             }
+            if (args.Length == 2 && args[0] == "--build")
+                return Logged(args[1], (s, log) => { s.Build().GetAwaiter().GetResult(); log("BUILD OK"); });
             if (args.Length == 3 && args[0] == "--play" && int.TryParse(args[1], out var seconds))
             {
                 // Starts the game with the saved settings, and after the given time

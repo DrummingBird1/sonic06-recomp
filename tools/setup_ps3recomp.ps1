@@ -34,13 +34,35 @@ if ($Export) {
   exit 0
 }
 
+$list = @(Get-ChildItem $patches -Filter *.patch -ErrorAction SilentlyContinue | Sort-Object Name)
+
+# A setup that stopped half way leaves a copy that exists but is not usable:
+# cloned but never checked out (no tools\, so the lift's python "can't open
+# file"), or checked out with git am stopped (the plain pinned commit, so a
+# build without the patches: upside down, silent, freezing). The next run took
+# it as done (issues #9 and #11). Ready means: checked out, no am in progress,
+# and at least one commit per patch file on top of the pinned commit.
+$checkedOut = Test-Path (Join-Path $copy 'tools\ppu_lifter.py')
+$amStopped = Test-Path (Join-Path $copy '.git\rebase-apply')
+function CopyReady {
+  if (-not $checkedOut -or $amStopped) { return $false }
+  git.exe -C $copy merge-base --is-ancestor $Commit HEAD 2>$null
+  if ($LASTEXITCODE) { return $false }
+  return [int](CopyGit rev-list --count "$Commit..HEAD") -ge $list.Count
+}
+
 if ((Test-Path $copy) -and -not $Reset) {
-  "copy exists: $copy at $(CopyGit rev-parse --short HEAD) ($(CopyGit rev-list --count "$Commit..HEAD") commit(s) on $($Commit.Substring(0, 7)))"
-  exit 0
+  if (CopyReady) {
+    "copy exists: $copy at $(CopyGit rev-parse --short HEAD) ($(CopyGit rev-list --count "$Commit..HEAD") commit(s) on $($Commit.Substring(0, 7)))"
+    exit 0
+  }
+  "copy at $copy is incomplete (an earlier setup stopped): making it again from $($Commit.Substring(0, 7)) and the patches"
 }
 
 if (Test-Path $copy) {
-  if (CopyGit status --porcelain) { throw "Uncommitted changes in $copy. Commit or discard them first." }
+  if ($amStopped) { CopyGit am --quit }
+  # A copy that was never checked out shows every file as deleted: nothing to lose.
+  if ($checkedOut -and (CopyGit status --porcelain)) { throw "Uncommitted changes in $copy. Commit or discard them first." }
 } else {
   if (-not $Source) { $Source = $env:PS3RECOMP_SOURCE }
   if (-not $Source) {
@@ -54,7 +76,13 @@ if (Test-Path $copy) {
   git.exe clone --quiet --shared --no-checkout $Source $copy
   if ($LASTEXITCODE) { throw 'git clone failed' }
 }
-CopyGit checkout --quiet --detach $Commit
-$list = @(Get-ChildItem $patches -Filter *.patch -ErrorAction SilentlyContinue | Sort-Object Name)
-if ($list) { CopyGit am --quiet --keep-cr @($list.FullName) }
+CopyGit checkout --quiet --force --detach $Commit
+# git am makes commits, and a fresh git (winget) has no user.name/user.email:
+# "Committer identity unknown", and the patches were never applied. Commits in
+# this copy stay on this PC; -Export keeps each patch's own author.
+$identity = @()
+if (-not (git.exe -C $copy config user.email)) {
+  $identity = '-c', 'user.name=Soleanna setup', '-c', 'user.email=setup@soleanna.invalid'
+}
+if ($list) { CopyGit @identity am --quiet --keep-cr @($list.FullName) }
 "copy ready: $copy at $(CopyGit rev-parse --short HEAD) with $($list.Count) patch(es)"

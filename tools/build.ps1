@@ -19,6 +19,9 @@ param(
   [string]$WinSysRoot = ''
 )
 $ErrorActionPreference = 'Stop'
+# The build runs Python too (gen_hle_nids.py): the same locale-independent
+# text files and pipes as relift.ps1.
+$env:PYTHONUTF8 = '1'
 $root = Split-Path -Parent $PSScriptRoot
 $build = Join-Path $root 'build'
 # -products *: a Build Tools install (what the launcher installs) is not a
@@ -27,8 +30,15 @@ $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.e
 $vs = if (Test-Path $vswhere) {
   & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
 } else { '' }
-$vcvars = Join-Path $vs 'VC\Auxiliary\Build\vcvars64.bat'
-$ninjaDir = Join-Path $vs 'Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja'
+# vswhere that finds no C++ tools (a Visual Studio install without the C++
+# workload) prints nothing, and $vs is $null: Join-Path would stop the build
+# before the winsysroot branch below gets its chance (issue #10).
+$vcvars = $null; $ninjaDir = $null; $vsComplete = $false
+if ($vs) {
+  $vcvars = Join-Path $vs 'VC\Auxiliary\Build\vcvars64.bat'
+  $ninjaDir = Join-Path $vs 'Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja'
+  $vsComplete = (Test-Path $vcvars) -and (Test-Path (Join-Path $ninjaDir 'ninja.exe'))
+}
 $llvm = 'C:\Program Files\LLVM\bin'
 $py = Join-Path $root '.venv\Scripts\python.exe'
 $ps3recomp = Join-Path $root 'work\ps3recomp'
@@ -54,7 +64,13 @@ function Copy-Sdl2 {
   if (Test-Path $dll) { Copy-Item $dll (Join-Path $build 'SDL2.dll') -Force }
 }
 $sysroot = Join-Path $root 'deps\winsysroot'
-if (-not $WinSysRoot -and -not $vs -and (Test-Path $sysroot)) { $WinSysRoot = $sysroot }
+# The launcher's rule (Tools.VisualStudio in launcher/Runner.cs): a Visual
+# Studio without vcvars64.bat or its own Ninja does not count, and Setup
+# installed deps\winsysroot instead, so use that.
+if (-not $WinSysRoot -and -not $vsComplete -and (Test-Path $sysroot)) { $WinSysRoot = $sysroot }
+if (-not $WinSysRoot -and -not ($vcvars -and (Test-Path $vcvars))) {
+  throw 'No C++ build tools: neither Visual Studio with the C++ workload nor deps\winsysroot. Run Setup in the launcher, which installs the second.'
+}
 
 if ($WinSysRoot) {
   # clang-cl and lld-link find the CRT and the SDK under /winsysroot, so

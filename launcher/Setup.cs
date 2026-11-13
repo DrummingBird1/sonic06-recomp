@@ -51,7 +51,36 @@ namespace Sonic06Launcher
 
         public Setup(Config cfg, Action<string> log, Action<int, int> progress)
         {
-            this.cfg = cfg; this.log = log; this.progress = progress;
+            this.cfg = cfg; this.progress = progress;
+            this.log = line => { Remember(line); log(line); };
+        }
+
+        // The latest lines of output, so a failed step can say what failed
+        // instead of pointing at a log that bug reports leave out (issues #10, #11).
+        readonly List<string> recent = new List<string>();
+        void Remember(string line)
+        {
+            lock (recent) { recent.Add(line); if (recent.Count > 2000) recent.RemoveRange(0, 1000); }
+        }
+
+        static readonly Regex Cause = new Regex(
+            @"error|exception|traceback|failed|cannot|can't|could not|not found|denied|no such file", RegexOptions.IgnoreCase);
+
+        /// <summary>The step's lines that look like the cause, else its last lines.</summary>
+        string Explain(string header)
+        {
+            List<string> lines;
+            lock (recent)
+            {
+                var start = recent.LastIndexOf(header);
+                lines = recent.Skip(start + 1).Where(l => l.Trim().Length > 0).ToList();
+            }
+            var picked = lines.Where(l => Cause.IsMatch(l)).ToList();
+            if (picked.Count == 0) picked = lines;
+            // pwsh frames its errors with "     | "; the frame is noise in a dialog.
+            return string.Join(Environment.NewLine, picked.Skip(Math.Max(0, picked.Count - 6))
+                .Select(l => l.Trim().TrimStart('|').Trim())
+                .Select(l => l.Length > 300 ? l.Substring(0, 300) + "…" : l));
         }
 
         // FFmpeg 8 (avcodec-62), the major the runtime is built against. BtbN's
@@ -425,11 +454,30 @@ namespace Sonic06Launcher
             return clone;
         }
 
+        /// <summary>
+        /// relift.ps1 writes work\recompiled\lift-complete.txt last, with the tree
+        /// of the ps3recomp copy it used. Missing: the lift stopped half way.
+        /// Another tree: it was made by an incomplete or older copy.
+        /// </summary>
+        static bool LiftCurrent()
+        {
+            var marker = Workspace.P("work", "recompiled", "lift-complete.txt");
+            if (!File.Exists(marker)) return false;
+            var git = Tools.Git();
+            if (git == null) return true;
+            var tree = Runner.Capture(git, $"-C {Runner.Quote(Workspace.P("work", "ps3recomp"))} rev-parse HEAD^{{tree}}").Trim();
+            return tree.Length == 0 || File.ReadAllText(marker).Trim() == tree;
+        }
+
         async Task Step(string what, Task<int> run)
         {
-            log("== " + what);
+            var header = "== " + what;
+            log(header);
             var rc = await run;
-            if (rc != 0) throw new InvalidOperationException($"{what} failed (exit code {rc}). The log above says why.");
+            if (rc != 0)
+                throw new InvalidOperationException(
+                    $"{what} failed (exit code {rc}). From its log:{Environment.NewLine}{Environment.NewLine}{Explain(header)}" +
+                    $"{Environment.NewLine}{Environment.NewLine}For an issue: {Loc.I["nav_support"]} → {Loc.I["support_report"]} saves the whole log in a zip.");
         }
 
         /// <summary>
@@ -442,9 +490,11 @@ namespace Sonic06Launcher
             if (!File.Exists(Workspace.EbootElf)) throw new InvalidOperationException("Decrypt the game first: game\\EBOOT.elf is missing.");
             Tools.RefreshPath();
             var src = await Ps3RecompSource();
-            if (resetToolkit || !Directory.Exists(Workspace.P("work", "ps3recomp")))
-                await Step("ps3recomp with the project's patches",
-                           Runner.Script("setup_ps3recomp.ps1", $"-Source {Runner.Quote(src)}" + (resetToolkit ? " -Reset" : ""), log));
+            // Every time, not only when work\ps3recomp is missing: the script checks
+            // that an existing copy has all the patches, and remakes one that a
+            // stopped setup left behind (issues #9, #11). A ready copy takes a second.
+            await Step("ps3recomp with the project's patches",
+                       Runner.Script("setup_ps3recomp.ps1", $"-Source {Runner.Quote(src)}" + (resetToolkit ? " -Reset" : ""), log));
 
             var py = Workspace.P(".venv", "Scripts", "python.exe");
             if (!File.Exists(py))
@@ -455,7 +505,7 @@ namespace Sonic06Launcher
                     $"pip install --python {Runner.Quote(py)} -r work\\ps3recomp\\requirements.txt -r tools\\re\\requirements.txt", log));
             }
 
-            if (resetToolkit || !Directory.Exists(Workspace.P("work", "recompiled")))
+            if (resetToolkit || !LiftCurrent())
                 await Step("Translating the game code (lift)", Runner.Script("relift.ps1", "", log));
 
             var jobs = Tools.BuildJobs();
