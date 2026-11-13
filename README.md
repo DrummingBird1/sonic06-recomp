@@ -59,7 +59,7 @@
 | ⚠️ Playthrough | No stage has been played to the end by a person yet |
 | ✅ Speed | The story scenes hold the game's own 30 fps cap; Wave Ocean runs at 57–59 fps |
 | ⚠️ Controllers | Supported through SDL2, but not yet tried with a real controller |
-| ⚠️ Hardware | Tested on one Windows PC |
+| ⚠️ Hardware | Tested on one Windows PC. The first reports from other PCs, a failed build ([#10](https://github.com/DrummingBird1/sonic06-recomp/issues/10), [#11](https://github.com/DrummingBird1/sonic06-recomp/issues/11)) and an upside-down picture ([#9](https://github.com/DrummingBird1/sonic06-recomp/issues/9)), are open and not investigated yet |
 
 What is in each version is in [CHANGELOG.md](CHANGELOG.md).
 
@@ -205,7 +205,7 @@ Not yet. It runs the original game logic, so the game's own bugs are still there
 <details>
 <summary><b>Will it run on my PC?</b></summary>
 
-It has been tested on one PC: an RTX 4070 SUPER, plus a short run on Intel UHD 770 graphics. You need 64-bit Windows 10 or 11, 8 GB of RAM or more and about 10 GB of disk. If you try it, a [hardware report](https://github.com/DrummingBird1/sonic06-recomp/issues/new?template=hardware.md) helps a lot, whether it worked or not.
+It has been tested on one PC: an RTX 4070 SUPER, plus a short run on Intel UHD 770 graphics. The first reports from other PCs didn't get as far as playing ([#9](https://github.com/DrummingBird1/sonic06-recomp/issues/9), [#10](https://github.com/DrummingBird1/sonic06-recomp/issues/10), [#11](https://github.com/DrummingBird1/sonic06-recomp/issues/11)), and they are still open. You need 64-bit Windows 10 or 11, 8 GB of RAM or more and about 10 GB of disk. If you try it, a [hardware report](https://github.com/DrummingBird1/sonic06-recomp/issues/new?template=hardware.md) helps a lot, whether it worked or not.
 </details>
 
 <details>
@@ -220,7 +220,7 @@ On the **Support** page, **Create a bug report** saves a zip on your desktop: yo
 
 ## Contributing
 
-The most useful help right now needs no code: a [hardware report](https://github.com/DrummingBird1/sonic06-recomp/issues/new?template=hardware.md) from your PC, or a stage played to the end. For code and translations, start with [CONTRIBUTING.md](CONTRIBUTING.md): building from source, where things are, the toolkit patches and the tests. [docs/HANDOFF.md](docs/HANDOFF.md) (in Hebrew) has the state of the project and the test recipes, and [docs/PHASE1.md](docs/PHASE1.md) the history of every fix, with its measurements.
+The most useful help right now needs no code: a [hardware report](https://github.com/DrummingBird1/sonic06-recomp/issues/new?template=hardware.md) from your PC, or a stage played to the end. For code and translations, start with [CONTRIBUTING.md](CONTRIBUTING.md): building from source, where things are, the toolkit patches, the tests, and working with an AI coding agent. What is open is in the [issues](https://github.com/DrummingBird1/sonic06-recomp/issues), and each fix is explained in its commit message and its patch file.
 
 Keep game files, and anything derived from them, out of git: the ISO, `game/`, `work/` and the built executable. A check on every pull request looks for them.
 
