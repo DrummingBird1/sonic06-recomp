@@ -40,6 +40,20 @@ if ($vs) {
   $vsComplete = (Test-Path $vcvars) -and (Test-Path (Join-Path $ninjaDir 'ninja.exe'))
 }
 $llvm = 'C:\Program Files\LLVM\bin'
+# CMake by its full path, in both branches below. The Visual Studio branch
+# used to call plain `cmake` and count on vcvars64.bat to add Visual Studio's
+# own copy to PATH; when it did not, the build stopped at once with "'cmake'
+# is not recognized" (issue #13). The CMake that winget installs is not added
+# to PATH either, so look where it goes, as the launcher does (Tools.CMake).
+$cmake = @(
+  (Get-Command cmake.exe -ErrorAction SilentlyContinue).Source
+  if ($vs) { Join-Path $vs 'Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe' }
+  Join-Path $env:ProgramFiles 'CMake\bin\cmake.exe'
+) | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
+if (-not $cmake) {
+  throw 'CMake not found: not on PATH, not in Visual Studio and not in Program Files\CMake. Run Setup in the launcher, which installs it.'
+}
+Write-Host "CMake: $cmake"
 $py = Join-Path $root '.venv\Scripts\python.exe'
 $ps3recomp = Join-Path $root 'work\ps3recomp'
 if (-not (Test-Path $ps3recomp)) {
@@ -80,8 +94,6 @@ if ($WinSysRoot) {
   # (msvcrtd.lib), and a Debug check fails to link.
   $ninja = (Get-Command ninja.exe -ErrorAction SilentlyContinue).Source
   if (-not $ninja) { $ninja = Join-Path $root 'deps\ninja.exe' }
-  $cmake = (Get-Command cmake.exe -ErrorAction SilentlyContinue).Source
-  if (-not $cmake) { $cmake = 'C:\Program Files\CMake\bin\cmake.exe' }
   $env:PATH = "$llvm;$env:PATH"
   $env:CFLAGS = "/winsysroot `"$WinSysRoot`""
   $env:CXXFLAGS = $env:CFLAGS
@@ -111,10 +123,11 @@ if ($FFmpegInclude) {
 foreach ($d in $Define) { $cacheArgs += " -D$d" }
 foreach ($d in $sdlArgs) { $cacheArgs += " `"$d`"" }
 if ($configure) {
-  $steps += "cmake -S `"$root`" -B `"$build`" -G Ninja -DCMAKE_BUILD_TYPE=$Config -DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl -DPython3_EXECUTABLE=`"$py`" -DPS3RECOMP_DIR=`"$ps3recomp`"$cacheArgs"
+  $steps += "`"$cmake`" -S `"$root`" -B `"$build`" -G Ninja -DCMAKE_BUILD_TYPE=$Config -DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl -DPython3_EXECUTABLE=`"$py`" -DPS3RECOMP_DIR=`"$ps3recomp`"$cacheArgs"
 }
-$steps += "cmake --build `"$build`" -j $Jobs"
-$cmd = "`"$vcvars`" >nul 2>&1 && set `"PATH=$llvm;$ninjaDir;%PATH%`" && " + ($steps -join ' && ')
+$steps += "`"$cmake`" --build `"$build`" -j $Jobs"
+# vcvars64.bat's own output stays out of the log, but not its errors.
+$cmd = "`"$vcvars`" >nul && set `"PATH=$llvm;$ninjaDir;%PATH%`" && " + ($steps -join ' && ')
 cmd /c $cmd
 $rc = $LASTEXITCODE
 if (-not $rc) { Copy-Sdl2 }
