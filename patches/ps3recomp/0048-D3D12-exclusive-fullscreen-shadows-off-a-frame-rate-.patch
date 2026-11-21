@@ -1,0 +1,303 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: DrummingBird1 <1979036+DrummingBird1@users.noreply.github.com>
+Date: Sun, 22 Nov 2026 00:44:16 +0200
+Subject: [PATCH] D3D12: exclusive fullscreen, shadows off, a frame rate
+ counter
+
+D3D12_FULLSCREEN=exclusive puts the borderless window in DXGI's exclusive
+fullscreen, enters it again after Alt+Tab, and leaves it before the window or
+the swap chain goes. It needs the present pass; a driver that refuses it keeps
+the borderless window.
+
+D3D12_SHADOWS=0 drops draws into a square depth-only surface of 1024 or more
+(the shadow map) before their vertices are converted; the map's clears still
+run, so every compare reads lit.
+
+D3D12_FPS=1 draws the last second's presents in the picture's corner, from the
+present pass, so it shows in fullscreen too.
+---
+ libs/video/rsx_d3d12_backend.c | 130 +++++++++++++++++++++++++++++++--
+ 1 file changed, 122 insertions(+), 8 deletions(-)
+
+diff --git a/libs/video/rsx_d3d12_backend.c b/libs/video/rsx_d3d12_backend.c
+index 66033b6f..cc053279 100644
+--- a/libs/video/rsx_d3d12_backend.c
++++ b/libs/video/rsx_d3d12_backend.c
+@@ -301,6 +301,12 @@ typedef struct {
+     ID3D12CommandQueue*        cmd_queue;
+     IDXGISwapChain3*           swap_chain;
+     int                        tearing;     /* D3D12_VSYNC=0 and the swap chain allows tearing */
++    UINT                       sc_flags;    /* the swap chain's creation flags, for ResizeBuffers */
++    /* D3D12_FULLSCREEN=exclusive: DXGI's own fullscreen. exclusive is asked
++     * for; fs_on is whether the swap chain is in it now (Alt+Tab leaves it);
++     * fs_retry asks the present thread to enter it again. */
++    int                        exclusive;
++    volatile LONG              fs_on, fs_retry;
+     ID3D12DescriptorHeap*      rtv_heap;
+     u32                        rtv_descriptor_size;
+     ID3D12Resource*            render_targets[FRAME_COUNT];
+@@ -724,6 +730,8 @@ static struct {
+     ID3D12PipelineState* pso;
+     float scaler, fxaa, sharpen, gamma, saturation, contrast;
+     int keep_aspect;
++    int fps_on;                        /* D3D12_FPS=1 */
++    float fps;                         /* the last second's presents, for the corner */
+ } s_pp;
+ 
+ static void pp_read_env(void)
+@@ -751,6 +759,8 @@ static void pp_read_env(void)
+     e = getenv("D3D12_CONTRAST");
+     s_pp.contrast = e ? (float)atof(e) : 1.f;
+     if (!(s_pp.contrast >= 0.5f && s_pp.contrast <= 1.5f)) s_pp.contrast = 1.f;
++    e = getenv("D3D12_FPS");
++    s_pp.fps_on = e && *e == '1';
+     e = getenv("D3D12_RES_SCALE");
+     s_rs = e ? (float)atof(e) : 1.f;
+     if (!(s_rs >= 1.f && s_rs <= 4.f) || !s_pp.on) s_rs = 1.f;
+@@ -769,13 +779,32 @@ static int d3d12_esc_closes(void)
+     return c;
+ }
+ 
++/* Leave exclusive fullscreen: DXGI wants that before the window or the swap
++ * chain goes away. Called on the thread that presents and pumps messages. */
++static void fs_leave(void)
++{
++    if (s_d3d.exclusive && s_d3d.swap_chain && s_d3d.fs_on) {
++        s_d3d.swap_chain->lpVtbl->SetFullscreenState(s_d3d.swap_chain, FALSE, NULL);
++        InterlockedExchange(&s_d3d.fs_on, 0);
++    }
++}
++
+ static LRESULT CALLBACK d3d12_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
+ {
+     switch (msg) {
+     case WM_CLOSE:
+         s_d3d.window_closed = 1;
++        fs_leave();
+         DestroyWindow(hwnd);
+         return 0;
++    case WM_ACTIVATEAPP:
++        /* Alt+Tab took exclusive fullscreen away (DXGI leaves it on its own);
++         * back in front, the next present enters it again. */
++        if (s_d3d.exclusive) {
++            if (wp) InterlockedExchange(&s_d3d.fs_retry, 1);
++            else InterlockedExchange(&s_d3d.fs_on, 0);
++        }
++        break;
+     case WM_DESTROY:
+         PostQuitMessage(0);
+         return 0;
+@@ -789,6 +818,7 @@ static LRESULT CALLBACK d3d12_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
+     case WM_KEYDOWN:
+         if (wp == VK_ESCAPE && d3d12_esc_closes()) {
+             s_d3d.window_closed = 1;
++            fs_leave();
+             DestroyWindow(hwnd);
+         }
+         return 0;
+@@ -870,6 +900,22 @@ static const char s_pp_hlsl[] =
+     "  if (scaler > 1.5) return sharpbil(uv);\n"
+     "  if (scaler > 0.5) return src.SampleLevel(pt, uv, 0).rgb;\n"
+     "  return bil(uv); }\n"
++    /* D3D12_FPS=1: the frame rate in the top-left corner, pad_.x (0 = off).
++     * A 3x5 font, one 15-bit row-major glyph per digit, scaled with the
++     * picture, on a darkened box. */
++    "static const uint font[10] = { 31599, 11415, 29671, 29647, 23497, 31183, 31215, 29257, 31727, 31695 };\n"
++    "float3 fps_box(float2 p, float3 c) {\n"
++    "  int n = (int)(pad_.x + 0.5); int nd = n >= 100 ? 3 : n >= 10 ? 2 : 1;\n"
++    "  float s = max(2.0, floor(dstSize.y / 270.0));\n"
++    "  float2 q = (p - 8.0) / s;\n"
++    "  if (q.x < -1.0 || q.y < -1.0 || q.x >= nd * 4.0 || q.y >= 6.0) return c;\n"
++    "  c *= 0.3;\n"
++    "  int cx = (int)floor(q.x), cy = (int)floor(q.y);\n"
++    "  if (cx < 0 || cy < 0 || cy > 4 || (cx & 3) == 3) return c;\n"
++    "  int d = cx >> 2, v = n;\n"
++    "  for (int k = d; k < nd - 1; k++) v /= 10;\n"
++    "  uint bit = (font[v % 10] >> ((4 - cy) * 3 + (2 - (cx & 3)))) & 1;\n"
++    "  return bit ? float3(1.0, 0.95, 0.35) : c; }\n"
+     "float4 ps_main(VO i) : SV_Target {\n"
+     "  float3 c = base(i.uv);\n"
+     "  if (sharpen > 0.0) {\n"
+@@ -894,6 +940,7 @@ static const char s_pp_hlsl[] =
+     "    float a = frac(52.9829189 * frac(dot(p, float2(0.06711056, 0.00583715))));\n"
+     "    float b = frac(52.9829189 * frac(dot(p + float2(47.0, 17.0), float2(0.06711056, 0.00583715))));\n"
+     "    c = saturate(c + (a + b - 1.0) / 255.0); }\n"
++    "  if (pad_.x > 0.0) c = fps_box(i.uv * dstSize, c);\n"   /* the picture's corner, not the window's */
+     "  return float4(c, 1); }\n";
+ 
+ /* The swap chain's buffers and their RTVs, after creation or a resize. */
+@@ -1004,8 +1051,10 @@ static HWND create_window(u32 width, u32 height, const char* title)
+ 
+     /* D3D12_WINDOW=<w>x<h>: the window's client size. The swap chain stays at
+      * the guest's size and is stretched to the window. D3D12_FULLSCREEN=1: a
+-     * borderless window over the primary monitor instead. A launcher sets
+-     * these from its display settings. */
++     * borderless window over the primary monitor instead, and
++     * D3D12_FULLSCREEN=exclusive the same window in DXGI's exclusive
++     * fullscreen (init_d3d12). A launcher sets these from its display
++     * settings. */
+     /* Sizes are pixels: declare per-monitor DPI awareness first, or Windows
+      * scales a DPI-unaware window behind our back (at 150%, a 1600x900 window
+      * came out 2400x1350). Without D3D12_WINDOW the size still follows the
+@@ -1026,6 +1075,7 @@ static HWND create_window(u32 width, u32 height, const char* title)
+     { const char* e = getenv("D3D12_FULLSCREEN");
+       if (e && strcmp(e, "0")) {
+           const POINT origin = {0, 0};
++          s_d3d.exclusive = !strcmp(e, "exclusive");
+           MONITORINFO mi;
+           mi.cbSize = sizeof mi;
+           if (GetMonitorInfoA(MonitorFromPoint(origin, MONITOR_DEFAULTTOPRIMARY), &mi)) {
+@@ -1189,9 +1239,17 @@ static int init_d3d12(u32 width, u32 height)
+             factory5->lpVtbl->Release(factory5);
+         }
+         s_d3d.tearing = tear ? 1 : 0;
+-        if (tear) sc_desc.Flags = DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;
++        if (tear) sc_desc.Flags |= DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;
+         printf("[D3D12] D3D12_VSYNC=0: tearing %s\n", tear ? "allowed" : "not supported");
+     }
++    /* Exclusive fullscreen resizes the buffers to the screen's own mode, so
++     * it needs the present pass (without it the buffers are the guest's). */
++    if (s_d3d.exclusive && !s_pp.on) {
++        printf("[D3D12] exclusive fullscreen needs the present pass: borderless instead\n");
++        s_d3d.exclusive = 0;
++    }
++    if (s_d3d.exclusive) sc_desc.Flags |= DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH;
++    s_d3d.sc_flags = sc_desc.Flags;
+ 
+     IDXGISwapChain1* swap_chain1 = NULL;
+     hr = factory->lpVtbl->CreateSwapChainForHwnd(
+@@ -1207,6 +1265,16 @@ static int init_d3d12(u32 width, u32 height)
+     factory->lpVtbl->MakeWindowAssociation(factory, s_d3d.hwnd, DXGI_MWA_NO_ALT_ENTER);
+     factory->lpVtbl->Release(factory);
+ 
++    /* The window already covers the screen at its own size, so DXGI keeps
++     * the desktop's mode; the present pass resizes the buffers on WM_SIZE. If
++     * the driver refuses, the borderless window stays, as it was before. */
++    if (s_d3d.exclusive) {
++        HRESULT fh = swap_chain1->lpVtbl->SetFullscreenState(swap_chain1, TRUE, NULL);
++        printf("[D3D12] exclusive fullscreen: %s (0x%08lX)\n", SUCCEEDED(fh) ? "on" : "refused, borderless instead", fh);
++        if (SUCCEEDED(fh)) InterlockedExchange(&s_d3d.fs_on, 1);
++        else s_d3d.exclusive = 0;
++    }
++
+     /* Query SwapChain3 interface */
+     hr = swap_chain1->lpVtbl->QueryInterface(
+         swap_chain1, &IID_IDXGISwapChain3, (void**)&s_d3d.swap_chain);
+@@ -5469,13 +5537,26 @@ static void guest_fb_present(u32 fi)
+  * touched them yet; the frames in flight are drained first. */
+ static void pp_resize_if_needed(void)
+ {
++    /* Back from Alt+Tab with exclusive fullscreen asked for: enter it again.
++     * DXGI asks for ResizeBuffers after each change, size or not. */
++    int force = 0;
++    if (s_d3d.exclusive && InterlockedExchange(&s_d3d.fs_retry, 0)) {
++        BOOL now = FALSE;
++        s_d3d.swap_chain->lpVtbl->GetFullscreenState(s_d3d.swap_chain, &now, NULL);
++        if (!now) {
++            wait_for_gpu();
++            HRESULT fh = s_d3d.swap_chain->lpVtbl->SetFullscreenState(s_d3d.swap_chain, TRUE, NULL);
++            printf("[D3D12] exclusive fullscreen again: %s (0x%08lX)\n", SUCCEEDED(fh) ? "on" : "refused", fh);
++            if (SUCCEEDED(fh)) { InterlockedExchange(&s_d3d.fs_on, 1); force = 1; }
++        } else InterlockedExchange(&s_d3d.fs_on, 1);
++    }
+     const LONG w = s_pp.want_w, h = s_pp.want_h;
+-    if (w <= 0 || h <= 0 || ((u32)w == s_pp.sc_w && (u32)h == s_pp.sc_h)) return;
++    if (w <= 0 || h <= 0 || (!force && (u32)w == s_pp.sc_w && (u32)h == s_pp.sc_h)) return;
+     wait_for_gpu();
+     for (u32 i = 0; i < FRAME_COUNT; i++)
+         if (s_pp.sc[i]) { s_pp.sc[i]->lpVtbl->Release(s_pp.sc[i]); s_pp.sc[i] = NULL; }
+     HRESULT hr = s_d3d.swap_chain->lpVtbl->ResizeBuffers(s_d3d.swap_chain, FRAME_COUNT, (UINT)w, (UINT)h,
+-                     DXGI_FORMAT_R8G8B8A8_UNORM, s_d3d.tearing ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0);
++                     DXGI_FORMAT_R8G8B8A8_UNORM, s_d3d.sc_flags);
+     if (FAILED(hr)) printf("[D3D12] present pass: ResizeBuffers %ldx%ld failed (0x%08lX)\n", w, h, hr);
+     else { s_pp.sc_w = (u32)w; s_pp.sc_h = (u32)h; }
+     if (pp_get_buffers() != 0) printf("[D3D12] present pass: swap chain buffers lost after a resize\n");
+@@ -5524,7 +5605,7 @@ static void present_pass(u32 fi)
+     cl->lpVtbl->SetDescriptorHeaps(cl, 1, &s_pp.srv_heap);
+     const float k[12] = { (float)rs_px(s_d3d.width), (float)rs_px(s_d3d.height), dw, dh,
+                           s_pp.scaler, s_pp.fxaa, s_pp.sharpen, s_pp.gamma,
+-                          s_pp.saturation, s_pp.contrast, 0.f, 0.f };
++                          s_pp.saturation, s_pp.contrast, s_pp.fps_on ? s_pp.fps : 0.f, 0.f };
+     cl->lpVtbl->SetGraphicsRoot32BitConstants(cl, 0, 12, k, 0);
+     D3D12_GPU_DESCRIPTOR_HANDLE srv;
+     s_pp.srv_heap->lpVtbl->GetGPUDescriptorHandleForHeapStart(s_pp.srv_heap, &srv);
+@@ -7109,9 +7190,9 @@ skip_dump_consider: ;
+         if (latency_log_on()) QueryPerformanceCounter(&q0);
+         if (!d3d12_vsync_off())
+             s_d3d.swap_chain->lpVtbl->Present(s_d3d.swap_chain, 1, 0);
+-        else
++        else   /* exclusive fullscreen tears by itself; DXGI rejects the flag there */
+             s_d3d.swap_chain->lpVtbl->Present(s_d3d.swap_chain, 0,
+-                                              s_d3d.tearing ? DXGI_PRESENT_ALLOW_TEARING : 0);
++                                              s_d3d.tearing && !s_d3d.fs_on ? DXGI_PRESENT_ALLOW_TEARING : 0);
+         if (ft_p0) ps3_ft_span(PS3_FT_PRESENT, 0, 0, 0, ft_p0, ps3_ft_now());
+         if (q0.QuadPart) {
+             QueryPerformanceCounter(&q1); QueryPerformanceFrequency(&qf);
+@@ -7143,6 +7224,8 @@ skip_dump_consider: ;
+                      s_tframes * 1000.0 / (double)(tnow - s_tt0),
+                      s_dbg_last_draws, s_d3d.width, s_d3d.height);
+             SetWindowTextA(s_d3d.hwnd, tb);
++            s_pp.fps = (float)(s_tframes * 1000.0 / (double)(tnow - s_tt0));
++            if (s_pp.fps < 1.f) s_pp.fps = 1.f;   /* 0 would hide the box */
+             s_tframes = 0;
+             s_tt0 = tnow;
+         }
+@@ -8336,6 +8419,34 @@ static u32 upload_strip_vp_indexed(const rsx_state* state, u32 first, u32 count,
+     return o;
+ }
+ 
++/* D3D12_SHADOWS=0: no shadow maps, for weak graphics cards. A draw into a
++ * square depth surface of 1024 or more with no colour target is a shadow map
++ * (Sonic 06: 2048x2048 DEPTH24_D8, sampled with a depth compare). Those draws
++ * are dropped before their vertices are converted; the map's clears still
++ * run, so it stays at the far plane and every compare reads "lit". */
++static int shadows_off(void)
++{
++    static int off = -1;
++    if (off < 0) {
++        const char* e = getenv("D3D12_SHADOWS");
++        off = e && *e == '0';
++        if (off) printf("[D3D12] D3D12_SHADOWS=0: shadow map draws are skipped\n");
++    }
++    return off;
++}
++
++static int skip_shadow_draw(void)
++{
++    if (!shadows_off()) return 0;
++    const rsx_state* st = s_d3d.current_rsx_state;
++    if (!st || st->color_target != 0 || !((st->surface_format >> 5) & 7u) || !st->surface_zeta_offset) return 0;
++    if (st->surface_clip_w < 1024 || st->surface_clip_w != st->surface_clip_h) return 0;
++    static int n;
++    if (PS3_LOG_FIRST(n, 1)) printf("[D3D12] shadows off: first skipped draw, %ux%u depth surface at 0x%X\n",
++                                      st->surface_clip_w, st->surface_clip_h, st->surface_zeta_offset);
++    return 1;
++}
++
+ static void d3d12_draw_arrays(void* ud, u32 primitive, u32 first, u32 count)
+ {
+     /* RSX_LIVE_FEED_DBG=1: pair with the [feed] method counts so "the FIFO
+@@ -8357,6 +8468,7 @@ static void d3d12_draw_arrays(void* ud, u32 primitive, u32 first, u32 count)
+ 
+     if (!s_d3d.pipeline_ready || !s_d3d.vb_mapped) return;
+     if (count == 0 || count > MAX_VERTICES) return;
++    if (skip_shadow_draw()) return;
+     vs_arrays(s_d3d.current_rsx_state, primitive, count);
+ 
+     /* QUADS (prim 8) have no D3D12 topology; expand to a triangle list.
+@@ -8605,6 +8717,7 @@ static void d3d12_draw_indexed(void* ud, u32 primitive, u32 first, u32 count)
+     if (!s_d3d.pipeline_ready) return;
+     if (count == 0 || count > MAX_VERTICES) return;
+     if (!s_d3d.vp_vb_mapped || !s_d3d.vp_root_sig) return;
++    if (skip_shadow_draw()) return;
+ 
+     /* Expand through the VP path (indices resolved CPU-side): QUADS -> two
+      * triangles per quad, TRIANGLES straight through, STRIP/FAN -> triangle
+@@ -9057,6 +9170,7 @@ void rsx_d3d12_backend_shutdown(void)
+         if (s_d3d.render_targets[i]) s_d3d.render_targets[i]->lpVtbl->Release(s_d3d.render_targets[i]);
+     }
+     if (s_d3d.rtv_heap) s_d3d.rtv_heap->lpVtbl->Release(s_d3d.rtv_heap);
++    fs_leave();
+     if (s_d3d.swap_chain) s_d3d.swap_chain->lpVtbl->Release(s_d3d.swap_chain);
+     if (s_d3d.cmd_queue) s_d3d.cmd_queue->lpVtbl->Release(s_d3d.cmd_queue);
+     if (s_d3d.device) s_d3d.device->lpVtbl->Release(s_d3d.device);

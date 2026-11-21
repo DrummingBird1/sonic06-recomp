@@ -2,6 +2,20 @@
 
 Soleanna is the project's name, and its launcher's; `sonic06-recomp` is the repository's.
 
+## 0.3.0 (weaker PCs)
+
+Options for PCs that cannot hold 60 frames a second, and a setup fix.
+
+- **Build stopped with "'cmake' is not recognized"** (#13): with Visual Studio installed, the build called plain `cmake` and counted on Visual Studio to put its own copy on PATH. It now finds CMake on PATH, in Visual Studio or in `Program Files\CMake`, as the launcher does, and calls it by its full path.
+- **Game speed** (#15): the game moves a fixed 1/60 of a second each frame, so below 60 frames per second everything slows down. Two new options in Graphics:
+  - **Keep the game at full speed (experimental):** the game moves by the real time between frames, using a mode the game already has but leaves off. At 30 frames per second a stage's timer then follows the clock. Tested in Wave Ocean only.
+  - **Limit to 30 frames per second:** a steady 30 instead of a frame rate that jumps between 30 and 60. Best with the first option.
+- **Exclusive fullscreen** (#17): a third display mode next to window and borderless, using DirectX's own fullscreen. It falls back to borderless when the driver refuses it.
+- **Shadows** (#11, #17): can be turned off. Characters and objects then cast no shadows. On the Intel UHD 770 it did not raise the frame rate; on other cards it is untested.
+- **Frame rate counter:** frames per second in the corner of the picture, also in fullscreen.
+- **Updating from 0.2.0** translates and builds the game code again, as a first setup does: the new options need two small calls in it. The launcher now also redoes the translation when the project's fixes to it change.
+- **Not yet:** fewer particles, a draw distance setting and a DirectX 11 backend (#11, #17) need work inside the game's renderer.
+
 ## 0.2.0 (setup on other PCs)
 
 The first people to try 0.1.0 on their own PCs did not get to the game. This version fixes what stopped them; the game itself is the same.

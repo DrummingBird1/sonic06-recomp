@@ -456,17 +456,30 @@ namespace Sonic06Launcher
 
         /// <summary>
         /// relift.ps1 writes work\recompiled\lift-complete.txt last, with the tree
-        /// of the ps3recomp copy it used. Missing: the lift stopped half way.
-        /// Another tree: it was made by an incomplete or older copy.
+        /// of the ps3recomp copy it used and a hash of tools\patch_lift.py. Missing:
+        /// the lift stopped half way. Another tree: it was made by an incomplete or
+        /// older copy. Another hash, or none (before 0.3.0): older post-lift fixes.
         /// </summary>
         static bool LiftCurrent()
         {
             var marker = Workspace.P("work", "recompiled", "lift-complete.txt");
             if (!File.Exists(marker)) return false;
+            var lines = File.ReadAllLines(marker).Select(l => l.Trim()).Where(l => l.Length > 0).ToArray();
+            if (lines.Length < 2 || lines[1] != "patch_lift " + PatchLiftHash()) return false;
             var git = Tools.Git();
             if (git == null) return true;
             var tree = Runner.Capture(git, $"-C {Runner.Quote(Workspace.P("work", "ps3recomp"))} rev-parse HEAD^{{tree}}").Trim();
-            return tree.Length == 0 || File.ReadAllText(marker).Trim() == tree;
+            return tree.Length == 0 || lines[0] == tree;
+        }
+
+        /// <summary>The first 16 hex digits of tools\patch_lift.py's SHA-256, as relift.ps1 writes them.</summary>
+        static string PatchLiftHash()
+        {
+            var path = Workspace.P("tools", "patch_lift.py");
+            if (!File.Exists(path)) return "";
+            using (var sha = System.Security.Cryptography.SHA256.Create())
+            using (var f = File.OpenRead(path))
+                return BitConverter.ToString(sha.ComputeHash(f)).Replace("-", "").Substring(0, 16);
         }
 
         async Task Step(string what, Task<int> run)

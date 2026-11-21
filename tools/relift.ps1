@@ -59,6 +59,7 @@ if ($LASTEXITCODE) { throw 'ppu_lifter failed' }
 if ($LASTEXITCODE) { throw 'patch_lift failed' }
 
 # Written last: the launcher redoes the lift when this is missing (a lift that
-# stopped half way) or names another toolkit tree (a lift made by an
-# incomplete or older ps3recomp copy).
-Set-Content (Join-Path $recomp 'lift-complete.txt') (git.exe -C $Ps3Recomp rev-parse 'HEAD^{tree}')
+# stopped half way), names another toolkit tree (a lift made by an incomplete
+# or older ps3recomp copy), or another patch_lift.py (older post-lift fixes).
+$patchLift = (Get-FileHash (Join-Path $PSScriptRoot 'patch_lift.py') -Algorithm SHA256).Hash.Substring(0, 16)
+Set-Content (Join-Path $recomp 'lift-complete.txt') @((git.exe -C $Ps3Recomp rev-parse 'HEAD^{tree}'), "patch_lift $patchLift")

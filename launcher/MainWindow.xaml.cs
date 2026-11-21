@@ -34,7 +34,11 @@ namespace Sonic06Launcher
         public GameSettings Settings { get; }
         public ObservableCollection<StatusItem> Status { get; } = new ObservableCollection<StatusItem>();
 
-        public Option[] ModeOptions { get; } = { new Option(false, "gfx_mode_window"), new Option(true, "gfx_mode_fullscreen") };
+        public Option[] ModeOptions { get; } =
+        {
+            new Option("window", "gfx_mode_window"), new Option("borderless", "gfx_mode_fullscreen"),
+            new Option("exclusive", "gfx_mode_exclusive"),
+        };
         // Between left-to-right marks, or a right-to-left page shows 1440 × 2560: an LRM before the
         // first number makes every number after it left-to-right, and the × between two of them too.
         // WPF ignores the isolates (LRI, PDI) and the embeddings (LRE, PDF): both still showed 1440 × 2560.

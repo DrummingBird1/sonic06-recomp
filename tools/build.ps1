@@ -126,8 +126,10 @@ if ($configure) {
   $steps += "`"$cmake`" -S `"$root`" -B `"$build`" -G Ninja -DCMAKE_BUILD_TYPE=$Config -DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl -DPython3_EXECUTABLE=`"$py`" -DPS3RECOMP_DIR=`"$ps3recomp`"$cacheArgs"
 }
 $steps += "`"$cmake`" --build `"$build`" -j $Jobs"
-# vcvars64.bat's own output stays out of the log, but not its errors.
-$cmd = "`"$vcvars`" >nul && set `"PATH=$llvm;$ninjaDir;%PATH%`" && " + ($steps -join ' && ')
+# vcvars64.bat's own output stays out of the log, but not its errors. It
+# looks for vswhere.exe on PATH and says so on stderr when it is not there.
+$installer = Split-Path $vswhere
+$cmd = "set `"PATH=$installer;%PATH%`" && `"$vcvars`" >nul && set `"PATH=$llvm;$ninjaDir;%PATH%`" && " + ($steps -join ' && ')
 cmd /c $cmd
 $rc = $LASTEXITCODE
 if (-not $rc) { Copy-Sdl2 }

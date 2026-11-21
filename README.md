@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/DrummingBird1/sonic06-recomp/releases/tag/v0.2.0"><img alt="Version 0.2.0" src="https://img.shields.io/badge/version-0.2.0-e8641e"></a>
+  <a href="https://github.com/DrummingBird1/sonic06-recomp/releases/tag/v0.3.0"><img alt="Version 0.3.0" src="https://img.shields.io/badge/version-0.3.0-e8641e"></a>
   <img alt="Status: work in progress" src="https://img.shields.io/badge/status-work%20in%20progress-f59e0b">
   <img alt="Windows 10 and 11" src="https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-2c3e8f">
   <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-2f9e6e"></a>
@@ -15,7 +15,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/DrummingBird1/sonic06-recomp/releases/tag/v0.2.0"><b>Download 0.2.0</b></a> ·
+  <a href="https://github.com/DrummingBird1/sonic06-recomp/releases/tag/v0.3.0"><b>Download 0.3.0</b></a> ·
   <a href="#screenshots">Screenshots</a> ·
   <a href="#getting-started">Getting started</a> ·
   <a href="#status">Status</a> ·
@@ -25,7 +25,7 @@
 </p>
 
 > [!IMPORTANT]
-> **Version 0.2.0 is an early work in progress.** Every stage and boss starts, but nobody has played a stage to the end yet, and it has been tested on one PC. You need your own copy of the game (BLES00028). This project is not affiliated with or endorsed by SEGA.
+> **Version 0.3.0 is an early work in progress.** Every stage and boss starts. One player has reported finishing Sonic's story on an older PC ([#16](https://github.com/DrummingBird1/sonic06-recomp/issues/16)); nobody has reported finishing Shadow's or Silver's yet. You need your own copy of the game (BLES00028). This project is not affiliated with or endorsed by SEGA.
 
 ## Screenshots
 
@@ -56,7 +56,7 @@
 |---|---|
 | ✅ Menus and story | The title screen, menus and movies, and the story up to Soleanna's town, with music and voices |
 | ✅ Stages and bosses | All 83 stage entries and 18 bosses start without a crash, in tests of about a minute each |
-| ⚠️ Playthrough | No stage has been played to the end by a person yet |
+| ⚠️ Playthrough | One player reports finishing Sonic's story with an S rank, on a GT 730 ([#16](https://github.com/DrummingBird1/sonic06-recomp/issues/16)); nobody has reported Shadow's or Silver's yet |
 | ✅ Speed | The story scenes hold the game's own 30 fps cap; Wave Ocean runs at 57–59 fps |
 | ⚠️ Controllers | Supported through SDL2, but not yet tried with a real controller |
 | ⚠️ Hardware | Tested on one Windows PC |
@@ -98,7 +98,7 @@ It speaks English, Hebrew, Spanish, French, German, Italian, Portuguese (Brazil)
 
 **Then**
 
-1. Download `Soleanna-0.2.0.exe` from the [release](https://github.com/DrummingBird1/sonic06-recomp/releases/tag/v0.2.0) and run it. It asks where to install (a `Soleanna` folder next to it, or one you pick), unpacks the build scripts there, adds a desktop shortcut and opens the launcher. The file is not signed, so Windows may warn about it first: **More info**, then **Run anyway**. Running it again opens your install, and a newer version offers to update it. In a git checkout, run `Sonic06.cmd` instead, which builds the launcher first (it needs the .NET SDK).
+1. Download `Soleanna-0.3.0.exe` from the [release](https://github.com/DrummingBird1/sonic06-recomp/releases/tag/v0.3.0) and run it. It asks where to install (a `Soleanna` folder next to it, or one you pick), unpacks the build scripts there, adds a desktop shortcut and opens the launcher. The file is not signed, so Windows may warn about it first: **More info**, then **Run anyway**. Running it again opens your install, and a newer version offers to update it. In a git checkout, run `Sonic06.cmd` instead, which builds the launcher first (it needs the .NET SDK).
 2. Open **Setup** and press **Set up everything**. It lists what it will do and asks before it installs or downloads anything. Then it:
    - installs the missing build tools: LLVM, CMake, Ninja, Git, uv and PowerShell 7 with winget, and Microsoft's C runtime and Windows SDK (about 630 MB, with [xwin](https://github.com/Jake-Shadle/xwin)) once you accept Microsoft's license. Visual Studio is not needed; if you have it with the C++ tools, the build uses it.
    - copies your disc into `game/` and decrypts it with your RPCS3,
@@ -132,7 +132,9 @@ Every control takes up to two keys or mouse buttons on the **Settings** page, wh
 
 ## Graphics
 
-- Window or borderless fullscreen, window size, aspect ratio (keep 16:9 or stretch) and VSync
+- Window, borderless or exclusive fullscreen, window size, aspect ratio (keep 16:9 or stretch) and VSync
+- **For PCs that cannot hold 60 fps**: the game normally slows down with the frame rate, as on the console. "Keep the game at full speed" (experimental) moves it by the real time between frames, and "Limit to 30 frames per second" holds a steady 30. Shadows can be turned off.
+- A frame rate counter in the corner of the picture
 - **Internal resolution**: the size the game draws at, from 1280×720 as on the PS3 up to 3840×2160, or automatic, which matches your window. Set above your window, it is supersampling: every pixel is the average of everything drawn under it, which smooths the edges.
 - Upscaling filter (smooth, sharp pixels, bicubic, nearest), sharpening, FXAA and texture filtering
 - Brightness, saturation and contrast
