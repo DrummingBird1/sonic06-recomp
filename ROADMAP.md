@@ -4,7 +4,7 @@ The current state and the open questions, built from the changelog, the README a
 
 ## Where it stands
 
-- **Latest version:** 0.3.0, for PCs that cannot hold 60 frames per second: the game can keep its real speed when frames drop, a 30 fps limit, a "Weak PC" preset, exclusive fullscreen, a shadows switch, a frame rate counter, and fewer sound dropouts on PCs with few cores. It also fixes the build stopping with "'cmake' is not recognized" (#13). See [CHANGELOG.md](CHANGELOG.md).
+- **Latest version:** 0.3.0, for PCs that cannot hold 60 frames per second: the game can keep its real speed when frames drop, a 30 fps limit, 120 fps for fast screens (experimental), a "Weak PC" preset, exclusive fullscreen, a shadows switch, a frame rate counter, and fewer sound dropouts on PCs with few cores. It also fixes the build stopping with "'cmake' is not recognized" (#13). See [CHANGELOG.md](CHANGELOG.md).
 - **What runs:** the title screen, menus and movies, the story to Soleanna's town, and every boss and stage entry, each started without a crash in tests of about a minute.
 - **Outside reports:** a player reported clearing Sonic's whole episode with an S rank on a GT730 and an i5-4590 (#16). The same player reported hit sounds cutting out, which 0.3.0 addresses, and broken UI in some stages, which is not investigated yet.
 

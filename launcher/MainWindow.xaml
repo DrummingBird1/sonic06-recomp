@@ -363,13 +363,17 @@
                                         <TextBlock Text="{l:T gfx_fps_desc}" Style="{StaticResource Sub}"/>
                                     </StackPanel>
                                 </CheckBox>
-                                <CheckBox Style="{StaticResource Toggle}" IsChecked="{Binding Settings.Cap30}" AutomationProperties.Name="{l:T gfx_cap30}" Margin="0,10">
-                                    <StackPanel>
-                                        <TextBlock Text="{l:T gfx_cap30}"/>
-                                        <TextBlock Text="{l:T gfx_cap30_desc}" Style="{StaticResource Sub}"/>
+                                <Grid Style="{StaticResource Row}">
+                                    <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                                    <StackPanel Margin="0,0,20,0">
+                                        <TextBlock Text="{l:T gfx_framerate}"/>
+                                        <TextBlock Text="{l:T gfx_framerate_desc}" Style="{StaticResource Sub}"/>
                                     </StackPanel>
-                                </CheckBox>
-                                <CheckBox Style="{StaticResource Toggle}" IsChecked="{Binding Settings.FullSpeed}" AutomationProperties.Name="{l:T gfx_fullspeed}" Margin="0,10">
+                                    <ComboBox Grid.Column="1" ItemsSource="{Binding FrameRateOptions}" SelectedValuePath="Value"
+                                              SelectedValue="{Binding Settings.FrameRate}" VerticalAlignment="Center"
+                                              AutomationProperties.Name="{l:T gfx_framerate}"/>
+                                </Grid>
+                                <CheckBox Style="{StaticResource Toggle}" IsChecked="{Binding Settings.FullSpeed}" IsEnabled="{Binding FullSpeedEnabled}" AutomationProperties.Name="{l:T gfx_fullspeed}" Margin="0,10">
                                     <StackPanel>
                                         <TextBlock Text="{l:T gfx_fullspeed}"/>
                                         <TextBlock Text="{l:T gfx_fullspeed_desc}" Style="{StaticResource Sub}"/>

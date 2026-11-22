@@ -17,8 +17,8 @@ namespace Sonic06Launcher
         Config cfg;
         public event PropertyChangedEventHandler PropertyChanged;
 
-        bool vsync = true, mute, keyboard = true, fxaa, escCloses, shaderAsync, shadows = true, fpsCounter, cap30, fullSpeed;
-        string displayMode = "window", windowSize = "1280x720", language = "", aspect = "keep", scaler = "bilinear", resScale = "auto";
+        bool vsync = true, mute, keyboard = true, fxaa, escCloses, shaderAsync, shadows = true, fpsCounter, fullSpeed;
+        string frameRate = "60", displayMode = "window", windowSize = "1280x720", language = "", aspect = "keep", scaler = "bilinear", resScale = "auto";
         int sharpen, aniso, brightness = 100, saturation = 100, contrast = 100, deadzone = 24;
         string adapter = "";
         bool mouseLook = true, mouseInvertX, mouseInvertY;
@@ -68,10 +68,14 @@ namespace Sonic06Launcher
         // frame rate in the picture's corner.
         public bool Shadows { get => shadows; set => Set(ref shadows, value); }
         public bool FpsCounter { get => fpsCounter; set => Set(ref fpsCounter, value); }
-        // Game speed (src/sonic06_timing.c, issue #15): SONIC06_FRAME_CAP=30 holds the game at
-        // 30 frames a second; SONIC06_VARIABLE_STEP=1 moves it by the real time between frames,
-        // so it no longer slows down when frames drop.
-        public bool Cap30 { get => cap30; set => Set(ref cap30, value); }
+        // Game speed (src/sonic06_timing.c, issue #15). The frame rate: 30 holds the game at a steady
+        // 30 (SONIC06_FRAME_CAP=30); 60 is the game's own; above 60 the toolkit's vblank runs at that
+        // rate too (GCM_VBLANK_HZ), and the game must move by real time, or it would run that much
+        // faster, so full speed is on whatever the toggle says. SONIC06_VARIABLE_STEP=1 (full speed)
+        // moves the game by the real time between frames, so it no longer slows down when frames drop.
+        public static readonly string[] FrameRates = { "30", "60", "120" };
+        public string FrameRate { get => frameRate; set { if (!FrameRates.Contains(value)) value = "60"; var was = FullSpeedForced; Set(ref frameRate, value); if (was != FullSpeedForced) PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(FullSpeedForced))); } }
+        public bool FullSpeedForced => int.Parse(frameRate, Inv) > 60;
         public bool FullSpeed { get => fullSpeed; set => Set(ref fullSpeed, value); }
 
         // The graphics card (CELLMARK_ADAPTER, a part of its name); "" is the high-performance one.
@@ -182,7 +186,7 @@ namespace Sonic06Launcher
             cfg.Put("my_fxaa", fxaa); cfg.Put("my_aniso", aniso.ToString()); cfg.Put("my_brightness", brightness.ToString());
             cfg.Put("my_saturation", saturation.ToString()); cfg.Put("my_contrast", contrast.ToString());
             cfg.Put("my_aspect", aspect); cfg.Put("my_vsync", vsync); cfg.Put("my_shaderAsync", shaderAsync);
-            cfg.Put("my_shadows", shadows); cfg.Put("my_cap30", cap30); cfg.Put("my_fullSpeed", fullSpeed);
+            cfg.Put("my_shadows", shadows); cfg.Put("my_frameRate", frameRate); cfg.Put("my_fullSpeed", fullSpeed);
             cfg.Save();
             PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(HasMyPreset)));
         }
@@ -259,12 +263,13 @@ namespace Sonic06Launcher
                 saturation = Int(c, "saturation", 100), contrast = Int(c, "contrast", 100),
                 resScale = c.Str("resScale", "auto"), shaderAsync = c.Bool("shaderAsync"),
                 shadows = c.Bool("shadows", true), fpsCounter = c.Bool("fpsCounter"),
-                cap30 = c.Bool("cap30"), fullSpeed = c.Bool("fullSpeed"),
+                frameRate = c.Str("frameRate", "60"), fullSpeed = c.Bool("fullSpeed"),
                 adapter = c.Str("adapter"), deadzone = Int(c, "deadzone", 24),
                 mouseLook = c.Bool("mouseLook", true), mouseSens = Int(c, "mouseSens", 30),
                 mouseInvertX = c.Bool("mouseInvertX"), mouseInvertY = c.Bool("mouseInvertY"),
             };
             if (!DisplayModes.Contains(s.displayMode)) s.displayMode = "window";
+            if (!FrameRates.Contains(s.frameRate)) s.frameRate = "60";
             s.LoadKeys(c.Str("keys"));
             s.cfg = c;
             return s;
@@ -280,7 +285,7 @@ namespace Sonic06Launcher
             cfg.Put("saturation", saturation.ToString()); cfg.Put("contrast", contrast.ToString());
             cfg.Put("resScale", resScale); cfg.Put("shaderAsync", shaderAsync);
             cfg.Put("shadows", shadows); cfg.Put("fpsCounter", fpsCounter);
-            cfg.Put("cap30", cap30); cfg.Put("fullSpeed", fullSpeed);
+            cfg.Put("frameRate", frameRate); cfg.Put("fullSpeed", fullSpeed);
             cfg.Put("adapter", adapter); cfg.Put("deadzone", deadzone.ToString());
             cfg.Put("mouseLook", mouseLook); cfg.Put("mouseSens", mouseSens.ToString());
             cfg.Put("mouseInvertX", mouseInvertX); cfg.Put("mouseInvertY", mouseInvertY);
@@ -300,17 +305,17 @@ namespace Sonic06Launcher
                     Brightness = Int(cfg, "my_brightness", 100); Aspect = cfg.Str("my_aspect", "keep");
                     Saturation = Int(cfg, "my_saturation", 100); Contrast = Int(cfg, "my_contrast", 100);
                     VSync = cfg.Bool("my_vsync", true); ShaderAsync = cfg.Bool("my_shaderAsync");
-                    Shadows = cfg.Bool("my_shadows", true); Cap30 = cfg.Bool("my_cap30"); FullSpeed = cfg.Bool("my_fullSpeed");
+                    Shadows = cfg.Bool("my_shadows", true); FrameRate = cfg.Str("my_frameRate", "60"); FullSpeed = cfg.Bool("my_fullSpeed");
                     break;
                 // For a PC that cannot hold 60 (issues #11, #15, #16): the lightest picture, no pause for
                 // shaders, and a steady 30 at the game's real speed. Shadows stay: turning them off did
                 // not raise the frame rate on the weak card it was measured on.
                 case "lowend": ResScale = "1"; Scaler = "bilinear"; Sharpen = 0; Fxaa = false; Aniso = 0;
-                    ShaderAsync = true; Cap30 = true; FullSpeed = true; break;
+                    ShaderAsync = true; FrameRate = "30"; FullSpeed = true; break;
                 case "performance": ResScale = "1"; Scaler = "bilinear"; Sharpen = 0; Fxaa = false; Aniso = 0; break;
                 case "balanced": ResScale = "auto"; Scaler = "sharp"; Sharpen = 25; Fxaa = false; Aniso = 4; break;
                 case "quality": ResScale = "auto"; Scaler = "bicubic"; Sharpen = 40; Fxaa = true; Aniso = 16; break;
-                default: ResScale = "auto"; Scaler = "bilinear"; Sharpen = 0; Fxaa = false; Aniso = 0; Aspect = "keep"; Brightness = 100; Saturation = 100; Contrast = 100; VSync = true; ShaderAsync = false; Shadows = true; Cap30 = false; FullSpeed = false; break;
+                default: ResScale = "auto"; Scaler = "bilinear"; Sharpen = 0; Fxaa = false; Aniso = 0; Aspect = "keep"; Brightness = 100; Saturation = 100; Contrast = 100; VSync = true; ShaderAsync = false; Shadows = true; FrameRate = "60"; FullSpeed = false; break;
             }
         }
 
@@ -340,8 +345,9 @@ namespace Sonic06Launcher
             if (ShaderAsync) e["D3D12_SHADER_ASYNC"] = "1";
             if (!Shadows) e["D3D12_SHADOWS"] = "0";
             if (FpsCounter) e["D3D12_FPS"] = "1";
-            if (Cap30) e["SONIC06_FRAME_CAP"] = "30";
-            if (FullSpeed) e["SONIC06_VARIABLE_STEP"] = "1";
+            if (FrameRate != "60") e["SONIC06_FRAME_CAP"] = FrameRate;
+            if (FullSpeedForced) e["GCM_VBLANK_HZ"] = FrameRate;
+            if (FullSpeed || FullSpeedForced) e["SONIC06_VARIABLE_STEP"] = "1";
             if (Adapter.Length > 0) e["CELLMARK_ADAPTER"] = Adapter;
             if (Deadzone != 24) e["PAD_DEADZONE"] = Deadzone.ToString(inv);
             // Without PAD_KEYS the game has its own default map; "start=0" is a map with no key at all.

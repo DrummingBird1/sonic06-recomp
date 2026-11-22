@@ -11,11 +11,12 @@ static constructors). Doing the store in the stub, as the hardware does,
 covers every dispatch path.
 
 Port hooks: a call into the port's own C code at the start of a few lifted
-functions (PORT_HOOKS below). The hooks are in src/ and do nothing unless a
-setting asks for it.
+functions (PORT_HOOKS below), and a call in place of a constant inside a few
+others (BODY_PATCHES). The code they call is in src/ and changes nothing
+unless a setting asks for it.
 
 Idempotent: a stub that already has the store, or a function that already has
-its hook, is left alone. A hook whose function is missing fails the run, so a
+its hook or its patch, is left alone. A hook whose function is missing fails the run, so a
 lift that moved a function does not ship without it.
 Usage: python patch_lift.py <recompiled dir>
 """
@@ -32,6 +33,43 @@ PORT_HOOKS = {
     "func_00E3433C": "sonic06_app_frame",    # AppMarathon's per-frame update: the frame cap
 }
 INCLUDE = '#include "ppu_recomp.h"\n'
+
+# Text replaced inside one lifted function's body: AppMarathon's two frame
+# limiters keep at least 15 ms (0x3A98 us) between frames, which stops the game
+# near 66 frames a second. sonic06_min_frame_us() is 15000 unless a frame cap
+# above 60 is set (src/sonic06_timing.c).
+MIN_FRAME = [
+    ("(uint64_t)0x3A97;", "(uint64_t)(sonic06_min_frame_us() - 1);"),
+    ("(uint64_t)(int64_t)(0x3A98);", "(uint64_t)(int64_t)(sonic06_min_frame_us());"),
+]
+BODY_PATCHES = {
+    "func_00F00C34": ("sonic06_min_frame_us", 'extern "C" int sonic06_min_frame_us(void);\n', MIN_FRAME),
+    "func_00EFFF28": ("sonic06_min_frame_us", 'extern "C" int sonic06_min_frame_us(void);\n', MIN_FRAME),
+}
+
+
+def patch_bodies(text):
+    """The text with each BODY_PATCHES function patched; and the names it patched or found patched."""
+    found = []
+    for func, (port, decl, pairs) in BODY_PATCHES.items():
+        head = f"void {func}(ppu_context* ctx) {{\n"
+        start = text.find(head)
+        if start < 0:
+            continue
+        end = text.find("\n}\n", start)
+        body = text[start:end]
+        if port in body:
+            found.append(func)
+            continue
+        for old, new in pairs:
+            if body.count(old) != 1:
+                raise SystemExit(f"patch_lift: {func}: expected one '{old}', found {body.count(old)}")
+            body = body.replace(old, new)
+        text = text[:start] + body + text[end:]
+        if decl not in text:
+            text = text.replace(INCLUDE, INCLUDE + decl, 1)
+        found.append(func)
+    return text, found
 
 
 def add_hooks(text):
@@ -57,21 +95,23 @@ def add_hooks(text):
 def main() -> int:
     root = pathlib.Path(sys.argv[1])
     total = 0
-    hooked = []
+    hooked, bodies = [], []
     for src in sorted(root.glob("ppu_recomp_*.cpp")):
         text = src.read_text(encoding="utf-8", errors="surrogateescape")
         new, n = STUB.subn(lambda m: f"{m.group(1)}{SPILL}ps3_hle_call({m.group(2)}, ctx); return;  /* import stub */", text)
         total += n
         new, found = add_hooks(new)
         hooked += found
+        new, found = patch_bodies(new)
+        bodies += found
         if new != text:
             src.write_text(new, encoding="utf-8", errors="surrogateescape", newline="\n")
     print(f"import stubs patched: {total}")
-    missing = sorted(set(PORT_HOOKS) - set(hooked))
+    missing = sorted((set(PORT_HOOKS) - set(hooked)) | (set(BODY_PATCHES) - set(bodies)))
     if missing:
-        print(f"patch_lift: lifted functions not found for the port hooks: {', '.join(missing)}")
+        print(f"patch_lift: lifted functions not found for the port's changes: {', '.join(missing)}")
         return 1
-    print(f"port hooks: {len(hooked)}")
+    print(f"port hooks: {len(hooked)}, patched functions: {len(bodies)}")
     return 0
 
 
