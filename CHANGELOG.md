@@ -10,6 +10,8 @@ Options for PCs that cannot hold 60 frames a second, and a setup fix.
 - **Game speed** (#15): the game moves a fixed 1/60 of a second each frame, so below 60 frames per second everything slows down. Two new options in Graphics:
   - **Keep the game at full speed (experimental):** the game moves by the real time between frames, using a mode the game already has but leaves off. At 30 frames per second a stage's timer then follows the clock. Tested in Wave Ocean only.
   - **Limit to 30 frames per second:** a steady 30 instead of a frame rate that jumps between 30 and 60. Best with the first option.
+- **"Weak PC" preset:** one click for the lightest picture, shaders compiled in the background, the 30 fps limit and full speed.
+- **Sound cutting out** (#16): on a PC with few cores the game's audio thread is sometimes a moment late with the next block of sound, and it played as a short silence. The mixer now waits a few milliseconds for a block that is still empty right after sound. Measured on 4 cores in a minute of Wave Ocean: 7 dropouts on average instead of 38 (four runs each, alternating), and no change on a PC with many cores.
 - **Exclusive fullscreen** (#17): a third display mode next to window and borderless, using DirectX's own fullscreen. It falls back to borderless when the driver refuses it.
 - **Shadows** (#11, #17): can be turned off. Characters and objects then cast no shadows. On the Intel UHD 770 it did not raise the frame rate; on other cards it is untested.
 - **Frame rate counter:** frames per second in the corner of the picture, also in fullscreen.

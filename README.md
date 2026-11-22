@@ -138,7 +138,7 @@ Every control takes up to two keys or mouse buttons on the **Settings** page, wh
 - **Internal resolution**: the size the game draws at, from 1280×720 as on the PS3 up to 3840×2160, or automatic, which matches your window. Set above your window, it is supersampling: every pixel is the average of everything drawn under it, which smooths the edges.
 - Upscaling filter (smooth, sharp pixels, bicubic, nearest), sharpening, FXAA and texture filtering
 - Brightness, saturation and contrast
-- Performance, balanced and quality presets, and one of your own
+- A "Weak PC" preset (the lightest picture, a steady 30 at full speed), performance, balanced and quality presets, and one of your own
 - Shaders are kept on disk after their first use. The first time a scene appears there can be a short pause while its shaders compile; "Compile shaders in the background" removes it, and some objects can then appear a few frames late.
 - <kbd>F12</kbd> saves a screenshot in `Pictures\Sonic06`.
 

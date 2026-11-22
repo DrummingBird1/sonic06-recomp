@@ -54,6 +54,7 @@
   "gfx_subtitle": "画面への映し方。変更は次にゲームを起動したときに反映されます。",
   "gfx_presets": "プリセット",
   "gfx_preset_performance": "パフォーマンス",
+  "gfx_preset_lowend": "低スペックPC",
   "gfx_preset_balanced": "バランス",
   "gfx_preset_quality": "画質",
   "gfx_reset": "リセット",

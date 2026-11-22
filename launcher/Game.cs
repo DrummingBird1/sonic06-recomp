@@ -182,7 +182,7 @@ namespace Sonic06Launcher
             cfg.Put("my_fxaa", fxaa); cfg.Put("my_aniso", aniso.ToString()); cfg.Put("my_brightness", brightness.ToString());
             cfg.Put("my_saturation", saturation.ToString()); cfg.Put("my_contrast", contrast.ToString());
             cfg.Put("my_aspect", aspect); cfg.Put("my_vsync", vsync); cfg.Put("my_shaderAsync", shaderAsync);
-            cfg.Put("my_shadows", shadows);
+            cfg.Put("my_shadows", shadows); cfg.Put("my_cap30", cap30); cfg.Put("my_fullSpeed", fullSpeed);
             cfg.Save();
             PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(HasMyPreset)));
         }
@@ -300,12 +300,17 @@ namespace Sonic06Launcher
                     Brightness = Int(cfg, "my_brightness", 100); Aspect = cfg.Str("my_aspect", "keep");
                     Saturation = Int(cfg, "my_saturation", 100); Contrast = Int(cfg, "my_contrast", 100);
                     VSync = cfg.Bool("my_vsync", true); ShaderAsync = cfg.Bool("my_shaderAsync");
-                    Shadows = cfg.Bool("my_shadows", true);
+                    Shadows = cfg.Bool("my_shadows", true); Cap30 = cfg.Bool("my_cap30"); FullSpeed = cfg.Bool("my_fullSpeed");
                     break;
+                // For a PC that cannot hold 60 (issues #11, #15, #16): the lightest picture, no pause for
+                // shaders, and a steady 30 at the game's real speed. Shadows stay: turning them off did
+                // not raise the frame rate on the weak card it was measured on.
+                case "lowend": ResScale = "1"; Scaler = "bilinear"; Sharpen = 0; Fxaa = false; Aniso = 0;
+                    ShaderAsync = true; Cap30 = true; FullSpeed = true; break;
                 case "performance": ResScale = "1"; Scaler = "bilinear"; Sharpen = 0; Fxaa = false; Aniso = 0; break;
                 case "balanced": ResScale = "auto"; Scaler = "sharp"; Sharpen = 25; Fxaa = false; Aniso = 4; break;
                 case "quality": ResScale = "auto"; Scaler = "bicubic"; Sharpen = 40; Fxaa = true; Aniso = 16; break;
-                default: ResScale = "auto"; Scaler = "bilinear"; Sharpen = 0; Fxaa = false; Aniso = 0; Aspect = "keep"; Brightness = 100; Saturation = 100; Contrast = 100; VSync = true; ShaderAsync = false; Shadows = true; break;
+                default: ResScale = "auto"; Scaler = "bilinear"; Sharpen = 0; Fxaa = false; Aniso = 0; Aspect = "keep"; Brightness = 100; Saturation = 100; Contrast = 100; VSync = true; ShaderAsync = false; Shadows = true; Cap30 = false; FullSpeed = false; break;
             }
         }
 

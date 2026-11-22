@@ -1,0 +1,123 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: DrummingBird1 <1979036+DrummingBird1@users.noreply.github.com>
+Date: Sun, 22 Nov 2026 08:51:13 +0200
+Subject: [PATCH] cellAudio: wait a few ms for a block the game is late to
+ write
+
+The mixer zeroes each block after reading it, so a block still empty under
+the read cursor right after sound is a writer that is late; read then, it
+plays as a dropout. For the first 3 blocks after sound, wait up to
+AUDIO_LATE_WAIT_MS (default 8, 0 = off) outside the port lock. AUDIO_RATE
+reports the waits and how many blocks arrived in them.
+
+Sonic 06, Wave Ocean, one minute, 4 cores, alternating: 7, 1, 18, 3 dropouts
+with the wait, 66, 26, 35, 24 without; no underruns, the same frame rate.
+On 24 cores: 1 and 2.
+---
+ libs/audio/cellAudio.c | 65 +++++++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 64 insertions(+), 1 deletion(-)
+
+diff --git a/libs/audio/cellAudio.c b/libs/audio/cellAudio.c
+index ae5cbc81..d5609553 100644
+--- a/libs/audio/cellAudio.c
++++ b/libs/audio/cellAudio.c
+@@ -128,6 +128,7 @@ typedef struct {
+     /* For address reporting to guest */
+     u64                  port_addr;      /* guest-visible buffer address */
+     u64                  read_idx_addr;  /* guest-visible read index address */
++    int                  since_loud;     /* blocks read since the last one with sound (0 = none yet) */
+ } AudioPortSlot;
+ 
+ static int            s_audio_initialized = 0;
+@@ -433,6 +434,56 @@ static inline float ld_be_f32(const float* p)
+     return f;
+ }
+ 
++static int block_is_zero(const float* b, u32 n)
++{
++    for (u32 i = 0; i < n; i++) if (b[i] != 0.0f) return 0;
++    return 1;
++}
++
++/* A writer that is late: the block under the read cursor is still empty (the
++ * mixer zeroes each block after reading it) right after one that held sound.
++ * Read now, it is a dropout, an all-zero block heard as the sound cutting out;
++ * the game writes it a moment later, into a block already played. On a PC with
++ * few cores the game's audio thread is more often that late (issue #16: 23
++ * dropouts in a minute of Wave Ocean on 4 cores, 8 on 24). So wait for it, for
++ * the first 3 blocks after sound, up to AUDIO_LATE_WAIT_MS each (default 8,
++ * 0 = off), outside the port lock. The device buffer holds about 32 ms ahead. */
++static u32 late_wait_us(void)
++{
++    static int us = -1;
++    if (us < 0) {
++        const char* e = getenv("AUDIO_LATE_WAIT_MS");
++        us = e ? (int)(atof(e) * 1000.0) : 8000;
++        if (us < 0) us = 0;
++        if (us > 20000) us = 20000;
++    }
++    return (u32)us;
++}
++
++static unsigned long long g_audio_late_waits, g_audio_late_saved;
++
++static void wait_for_late_block(const float* src, u32 n)
++{
++    const u32 budget = late_wait_us();
++    if (!budget) return;
++    g_audio_late_waits++;
++#ifdef _WIN32
++    LARGE_INTEGER f, t0, t;
++    QueryPerformanceFrequency(&f); QueryPerformanceCounter(&t0);
++    for (;;) {
++        SwitchToThread();
++        if (!block_is_zero(src, n)) { g_audio_late_saved++; return; }
++        QueryPerformanceCounter(&t);
++        if ((t.QuadPart - t0.QuadPart) * 1000000 / f.QuadPart >= budget) return;
++    }
++#else
++    for (u32 waited = 0; waited < budget; waited += 250) {
++        usleep(250);
++        if (!block_is_zero(src, n)) { g_audio_late_saved++; return; }
++    }
++#endif
++}
++
+ /* Mix one block from all active ports into s_mix_buffer (stereo float) */
+ static void audio_mix_one_block(void)
+ {
+@@ -472,6 +523,15 @@ static void audio_mix_one_block(void)
+         u32 block_idx = (u32)(port->read_index % nblock);
+         u32 block_offset = block_idx * CELL_AUDIO_BLOCK_SAMPLES * nch;
+         float* src = port->buffer + block_offset;
++        const u32 nsamp = CELL_AUDIO_BLOCK_SAMPLES * nch;
++        if (port->since_loud && port->since_loud <= 3 && block_is_zero(src, nsamp)) {
++            mutex_unlock(&s_audio_mutex);
++            wait_for_late_block(src, nsamp);
++            mutex_lock(&s_audio_mutex);
++            if (!port->in_use || !port->running || port->buffer + block_offset != src) continue;
++        }
++        if (!block_is_zero(src, nsamp)) port->since_loud = 1;
++        else if (port->since_loud) port->since_loud++;
+ 
+         /* AUDIO_PEAK diag: which blocks of this port's WHOLE ring hold data,
+          * vs which block the read cursor is on -- distinguishes "writer never
+@@ -669,7 +729,7 @@ static unsigned __stdcall audio_mix_thread_func(void* arg)
+         audio_backend_submit(s_mix_buffer, CELL_AUDIO_BLOCK_SAMPLES);
+         /* AUDIO_RATE=1: blocks mixed vs real time, and frames dropped. */
+         { static int on = -1; if (on < 0) on = getenv("AUDIO_RATE") ? 1 : 0;
+-          if (on) { static ULONGLONG t0; static unsigned n, z; static unsigned long long d0, u0;
++          if (on) { static ULONGLONG t0; static unsigned n, z; static unsigned long long d0, u0, lw0, ls0;
+             ULONGLONG now = GetTickCount64(); if (!t0) t0 = now; n++;
+             { int nz = 0; for (u32 i = 0; i < CELL_AUDIO_BLOCK_SAMPLES * 2; i++) if (s_mix_buffer[i] != 0.0f) { nz = 1; break; }
+               if (!nz) z++; }
+@@ -683,6 +743,9 @@ static unsigned __stdcall audio_mix_thread_func(void* arg)
+ #else
+                         0u, 10);
+ #endif
++                fprintf(stderr, "[audio-rate] late blocks waited for %llu, written in time %llu%c",
++                        g_audio_late_waits - lw0, g_audio_late_saved - ls0, 10);
++                lw0 = g_audio_late_waits; ls0 = g_audio_late_saved;
+                 n = z = 0; d0 = g_audio_dropped; u0 = g_audio_underruns; g_audio_fill_min = 0xFFFFFFFFu; t0 = now; } } }
+ 
+         /* Notify event queues */

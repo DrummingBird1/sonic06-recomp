@@ -298,6 +298,7 @@
                             <DockPanel>
                                 <TextBlock Text="{l:T gfx_presets}" Style="{StaticResource H2}" Margin="0,0,20,0" VerticalAlignment="Center"/>
                                 <WrapPanel HorizontalAlignment="Right">
+                                    <Button Content="{l:T gfx_preset_lowend}" Tag="lowend" Click="OnPreset" Margin="0,0,8,0"/>
                                     <Button Content="{l:T gfx_preset_performance}" Tag="performance" Click="OnPreset" Margin="0,0,8,0"/>
                                     <Button Content="{l:T gfx_preset_balanced}" Tag="balanced" Click="OnPreset" Margin="0,0,8,0"/>
                                     <Button Content="{l:T gfx_preset_quality}" Tag="quality" Click="OnPreset" Margin="0,0,8,0"/>

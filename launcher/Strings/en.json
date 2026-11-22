@@ -58,6 +58,7 @@
   "gfx_subtitle": "How the picture reaches your screen. Changes apply the next time the game starts.",
   "gfx_presets": "Presets",
   "gfx_preset_performance": "Performance",
+  "gfx_preset_lowend": "Weak PC",
   "gfx_preset_balanced": "Balanced",
   "gfx_preset_quality": "Quality",
   "gfx_reset": "Reset",

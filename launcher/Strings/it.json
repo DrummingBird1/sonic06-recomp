@@ -54,6 +54,7 @@
   "gfx_subtitle": "Come l'immagine arriva al tuo schermo. Le modifiche valgono dal prossimo avvio del gioco.",
   "gfx_presets": "Preimpostazioni",
   "gfx_preset_performance": "Prestazioni",
+  "gfx_preset_lowend": "PC modesto",
   "gfx_preset_balanced": "Bilanciato",
   "gfx_preset_quality": "Qualità",
   "gfx_reset": "Ripristina",

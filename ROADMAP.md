@@ -1,27 +1,26 @@
 # Soleanna roadmap
 
-The current state and the open questions, built from the changelog, the README and the open issues as of 2026-11-21. Nothing here is a promise or a date. The issues are the live task list. This file is updated with each release or when the plan changes.
+The current state and the open questions, built from the changelog, the README and the open issues as of 2026-11-22. Nothing here is a promise or a date. The issues are the live task list. This file is updated with each release or when the plan changes.
 
 ## Where it stands
 
-- **Latest release:** 0.2.0 (2026-11-13). It fixes setup on other PCs. Before it, the first outside users could not reach the game (#9, #10, #11). The game itself is the same as in 0.1.0. See [CHANGELOG.md](CHANGELOG.md).
+- **Latest version:** 0.3.0, for PCs that cannot hold 60 frames per second: the game can keep its real speed when frames drop, a 30 fps limit, a "Weak PC" preset, exclusive fullscreen, a shadows switch, a frame rate counter, and fewer sound dropouts on PCs with few cores. It also fixes the build stopping with "'cmake' is not recognized" (#13). See [CHANGELOG.md](CHANGELOG.md).
 - **What runs:** the title screen, menus and movies, the story to Soleanna's town, and every boss and stage entry, each started without a crash in tests of about a minute.
-- **Outside reports:** on 2026-11-15 a player reported clearing Sonic's whole episode with an S rank on a GT730 and an i5-4590, with occasional stutters and no crash (#16). The same player reported that hit and damage sounds sometimes cut out and that some stages have broken UI. These reports have not been reproduced on the maintainer's PC.
-- **Open pull request:** #12, docs for working with an AI agent.
+- **Outside reports:** a player reported clearing Sonic's whole episode with an S rank on a GT730 and an i5-4590 (#16). The same player reported hit sounds cutting out, which 0.3.0 addresses, and broken UI in some stages, which is not investigated yet.
 
-## Now: setup on other PCs
+## Now: confirm 0.3.0 on other PCs
 
-- **#9, #10, #11:** fixed in 0.2.0 and answered on 2026-11-13. They stay open until the reporters confirm 0.2.0 works for them. #11's reporter thanked us but did not say whether setup now works.
-- **#13, `'cmake' is not recognized`:** an update from 0.1.0 to 0.2.0 reaches the build step, and the build stops at once. New since 0.2.0 and not investigated yet.
-- **#14, black screen:** the issue has only the empty template, with no details or bug report. It needs more information from the reporter.
+- **#13:** fixed in 0.3.0 by finding CMake by its full path. Not yet confirmed by the reporter.
+- **#9, #10, #11:** fixed in 0.2.0. They stay open until the reporters confirm.
+- **#15, #16:** the full-speed option and the sound fix were measured on the maintainer's PC only, the sound one with 4 cores to stand in for an i5-4590. Reports from weak PCs decide whether full speed can become the default.
+- **#14, black screen:** the issue has only the empty template. It needs details or a bug report from the reporter.
 - **#5, a clean PC:** the full setup has not been run on a fresh Windows install yet.
 
-## Next: weaker PCs and real hardware
+## Next: open questions
 
-Requests from players on low-end PCs. These are open questions, not decisions:
-
-- **#11, #17:** more graphics options for weak GPUs: NPC shadows, particles, draw distance, light sharpening, exclusive fullscreen, and a DX11 backend.
-- **#15:** a launch option to keep the physics at 30 ticks while rendering runs freely. When the PC cannot keep up, the game slows down instead of dropping frames (#16).
+- **Broken UI in some stages (#16):** which stages, and whether it is the same on a fast PC.
+- **More than 60 frames per second:** with the game moving by real time, the remaining limit is a fixed wait of 15 ms between frames inside the game's own code. Untried.
+- **Fewer particles, a draw distance setting, a DirectX 11 backend (#11, #17):** each needs work inside the game's renderer. Turning shadows off did not raise the frame rate on the weak card it was measured on (Intel UHD 770), so the gain of such options is not known in advance.
 - **#7:** testing on AMD, Intel and weaker NVIDIA cards.
 - **#2:** testing with a real controller. SDL2 support is in, but no real controller has been tried by the maintainer.
 
@@ -37,6 +36,7 @@ Requests from players on low-end PCs. These are open questions, not decisions:
 
 - **#6:** review the launcher's translations (ten languages).
 - **#1, #2, #5, #7:** play, test controllers, try a clean PC, and try other hardware.
+- **Weak PCs:** try the "Weak PC" preset and say how it plays.
 
 ## Tracking
 

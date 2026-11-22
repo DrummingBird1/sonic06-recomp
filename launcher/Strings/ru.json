@@ -54,6 +54,7 @@
   "gfx_subtitle": "Как изображение попадает на ваш экран. Изменения вступят в силу при следующем запуске игры.",
   "gfx_presets": "Пресеты",
   "gfx_preset_performance": "Производительность",
+  "gfx_preset_lowend": "Слабый ПК",
   "gfx_preset_balanced": "Баланс",
   "gfx_preset_quality": "Качество",
   "gfx_reset": "Сброс",
