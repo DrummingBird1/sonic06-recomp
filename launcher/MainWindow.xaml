@@ -176,7 +176,7 @@
                                     <StackPanel Margin="0,0,24,8">
                                         <TextBlock Text="{l:T gfx_mode}" Style="{StaticResource Sub}" Margin="0,0,0,6"/>
                                         <ComboBox ItemsSource="{Binding ModeOptions}" SelectedValuePath="Value"
-                                                  SelectedValue="{Binding Settings.Fullscreen}"/>
+                                                  SelectedValue="{Binding Settings.DisplayMode}"/>
                                     </StackPanel>
                                     <StackPanel Margin="0,0,24,8">
                                         <TextBlock Text="{l:T gfx_size}" Style="{StaticResource Sub}" Margin="0,0,0,6"/>
@@ -298,6 +298,7 @@
                             <DockPanel>
                                 <TextBlock Text="{l:T gfx_presets}" Style="{StaticResource H2}" Margin="0,0,20,0" VerticalAlignment="Center"/>
                                 <WrapPanel HorizontalAlignment="Right">
+                                    <Button Content="{l:T gfx_preset_lowend}" Tag="lowend" Click="OnPreset" Margin="0,0,8,0"/>
                                     <Button Content="{l:T gfx_preset_performance}" Tag="performance" Click="OnPreset" Margin="0,0,8,0"/>
                                     <Button Content="{l:T gfx_preset_balanced}" Tag="balanced" Click="OnPreset" Margin="0,0,8,0"/>
                                     <Button Content="{l:T gfx_preset_quality}" Tag="quality" Click="OnPreset" Margin="0,0,8,0"/>
@@ -324,7 +325,7 @@
                                     <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                                     <TextBlock Text="{l:T gfx_mode}" VerticalAlignment="Center"/>
                                     <ComboBox Grid.Column="1" ItemsSource="{Binding ModeOptions}" SelectedValuePath="Value"
-                                              SelectedValue="{Binding Settings.Fullscreen}"/>
+                                              SelectedValue="{Binding Settings.DisplayMode}"/>
                                 </Grid>
                                 <Grid Style="{StaticResource Row}">
                                     <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
@@ -348,6 +349,34 @@
                                     <StackPanel>
                                         <TextBlock Text="{l:T gfx_async}"/>
                                         <TextBlock Text="{l:T gfx_async_desc}" Style="{StaticResource Sub}"/>
+                                    </StackPanel>
+                                </CheckBox>
+                                <CheckBox Style="{StaticResource Toggle}" IsChecked="{Binding Settings.Shadows}" AutomationProperties.Name="{l:T gfx_shadows}" Margin="0,10">
+                                    <StackPanel>
+                                        <TextBlock Text="{l:T gfx_shadows}"/>
+                                        <TextBlock Text="{l:T gfx_shadows_desc}" Style="{StaticResource Sub}"/>
+                                    </StackPanel>
+                                </CheckBox>
+                                <CheckBox Style="{StaticResource Toggle}" IsChecked="{Binding Settings.FpsCounter}" AutomationProperties.Name="{l:T gfx_fps}" Margin="0,10">
+                                    <StackPanel>
+                                        <TextBlock Text="{l:T gfx_fps}"/>
+                                        <TextBlock Text="{l:T gfx_fps_desc}" Style="{StaticResource Sub}"/>
+                                    </StackPanel>
+                                </CheckBox>
+                                <Grid Style="{StaticResource Row}">
+                                    <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                                    <StackPanel Margin="0,0,20,0">
+                                        <TextBlock Text="{l:T gfx_framerate}"/>
+                                        <TextBlock Text="{l:T gfx_framerate_desc}" Style="{StaticResource Sub}"/>
+                                    </StackPanel>
+                                    <ComboBox Grid.Column="1" ItemsSource="{Binding FrameRateOptions}" SelectedValuePath="Value"
+                                              SelectedValue="{Binding Settings.FrameRate}" VerticalAlignment="Center"
+                                              AutomationProperties.Name="{l:T gfx_framerate}"/>
+                                </Grid>
+                                <CheckBox Style="{StaticResource Toggle}" IsChecked="{Binding Settings.FullSpeed}" IsEnabled="{Binding FullSpeedEnabled}" AutomationProperties.Name="{l:T gfx_fullspeed}" Margin="0,10">
+                                    <StackPanel>
+                                        <TextBlock Text="{l:T gfx_fullspeed}"/>
+                                        <TextBlock Text="{l:T gfx_fullspeed_desc}" Style="{StaticResource Sub}"/>
                                     </StackPanel>
                                 </CheckBox>
                             </StackPanel>

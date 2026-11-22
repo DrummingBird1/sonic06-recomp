@@ -17,8 +17,8 @@ namespace Sonic06Launcher
         Config cfg;
         public event PropertyChangedEventHandler PropertyChanged;
 
-        bool fullscreen, vsync = true, mute, keyboard = true, fxaa, escCloses, shaderAsync;
-        string windowSize = "1280x720", language = "", aspect = "keep", scaler = "bilinear", resScale = "auto";
+        bool vsync = true, mute, keyboard = true, fxaa, escCloses, shaderAsync, shadows = true, fpsCounter, fullSpeed;
+        string frameRate = "60", displayMode = "window", windowSize = "1280x720", language = "", aspect = "keep", scaler = "bilinear", resScale = "auto";
         int sharpen, aniso, brightness = 100, saturation = 100, contrast = 100, deadzone = 24;
         string adapter = "";
         bool mouseLook = true, mouseInvertX, mouseInvertY;
@@ -26,7 +26,21 @@ namespace Sonic06Launcher
         readonly int[][] keys = DefaultKeyMap();
 
         // Display and sound. D3D12_FULLSCREEN, D3D12_WINDOW, D3D12_VSYNC=0, PS3_LANG, PS3_MUTE.
-        public bool Fullscreen { get => fullscreen; set => Set(ref fullscreen, value); }
+        // The display mode is window, borderless (a window over the whole screen) or exclusive
+        // (DXGI's own fullscreen, which skips the desktop's compositor on older graphics cards).
+        public static readonly string[] DisplayModes = { "window", "borderless", "exclusive" };
+        public string DisplayMode
+        {
+            get => displayMode;
+            set
+            {
+                if (!DisplayModes.Contains(value)) value = "window";
+                var was = Fullscreen;
+                Set(ref displayMode, value);
+                if (was != Fullscreen) PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(Fullscreen)));
+            }
+        }
+        public bool Fullscreen => displayMode != "window";
         public string WindowSize { get => windowSize; set => Set(ref windowSize, value); }
         public bool VSync { get => vsync; set => Set(ref vsync, value); }
         public string Language { get => language; set => Set(ref language, value ?? ""); }
@@ -50,6 +64,19 @@ namespace Sonic06Launcher
         // Shaders compile in the background (patch 0038): D3D12_SHADER_ASYNC. Off by default, because
         // a draw is skipped until its shader is ready.
         public bool ShaderAsync { get => shaderAsync; set => Set(ref shaderAsync, value); }
+        // D3D12_SHADOWS=0 skips the shadow map, for weak graphics cards; D3D12_FPS=1 shows the
+        // frame rate in the picture's corner.
+        public bool Shadows { get => shadows; set => Set(ref shadows, value); }
+        public bool FpsCounter { get => fpsCounter; set => Set(ref fpsCounter, value); }
+        // Game speed (src/sonic06_timing.c, issue #15). The frame rate: 30 holds the game at a steady
+        // 30 (SONIC06_FRAME_CAP=30); 60 is the game's own; above 60 the toolkit's vblank runs at that
+        // rate too (GCM_VBLANK_HZ), and the game must move by real time, or it would run that much
+        // faster, so full speed is on whatever the toggle says. SONIC06_VARIABLE_STEP=1 (full speed)
+        // moves the game by the real time between frames, so it no longer slows down when frames drop.
+        public static readonly string[] FrameRates = { "30", "60", "120" };
+        public string FrameRate { get => frameRate; set { if (!FrameRates.Contains(value)) value = "60"; var was = FullSpeedForced; Set(ref frameRate, value); if (was != FullSpeedForced) PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(FullSpeedForced))); } }
+        public bool FullSpeedForced => int.Parse(frameRate, Inv) > 60;
+        public bool FullSpeed { get => fullSpeed; set => Set(ref fullSpeed, value); }
 
         // The graphics card (CELLMARK_ADAPTER, a part of its name); "" is the high-performance one.
         public string Adapter { get => adapter; set => Set(ref adapter, value ?? ""); }
@@ -159,6 +186,7 @@ namespace Sonic06Launcher
             cfg.Put("my_fxaa", fxaa); cfg.Put("my_aniso", aniso.ToString()); cfg.Put("my_brightness", brightness.ToString());
             cfg.Put("my_saturation", saturation.ToString()); cfg.Put("my_contrast", contrast.ToString());
             cfg.Put("my_aspect", aspect); cfg.Put("my_vsync", vsync); cfg.Put("my_shaderAsync", shaderAsync);
+            cfg.Put("my_shadows", shadows); cfg.Put("my_frameRate", frameRate); cfg.Put("my_fullSpeed", fullSpeed);
             cfg.Save();
             PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(HasMyPreset)));
         }
@@ -227,16 +255,21 @@ namespace Sonic06Launcher
         {
             var s = new GameSettings
             {
-                fullscreen = c.Bool("fullscreen"), windowSize = c.Str("windowSize", DefaultSize()), vsync = c.Bool("vsync", true),
+                // Launchers before 0.3.0 kept only "fullscreen", which meant borderless.
+                displayMode = c.Str("displayMode", c.Bool("fullscreen") ? "borderless" : "window"), windowSize = c.Str("windowSize", DefaultSize()), vsync = c.Bool("vsync", true),
                 language = c.Str("language"), mute = c.Bool("mute"), keyboard = c.Bool("keyboard", true),
                 escCloses = c.Bool("escCloses"), aspect = c.Str("aspect", "keep"), scaler = c.Str("scaler", "bilinear"),
                 sharpen = Int(c, "sharpen", 0), fxaa = c.Bool("fxaa"), aniso = Int(c, "aniso", 0), brightness = Int(c, "brightness", 100),
                 saturation = Int(c, "saturation", 100), contrast = Int(c, "contrast", 100),
                 resScale = c.Str("resScale", "auto"), shaderAsync = c.Bool("shaderAsync"),
+                shadows = c.Bool("shadows", true), fpsCounter = c.Bool("fpsCounter"),
+                frameRate = c.Str("frameRate", "60"), fullSpeed = c.Bool("fullSpeed"),
                 adapter = c.Str("adapter"), deadzone = Int(c, "deadzone", 24),
                 mouseLook = c.Bool("mouseLook", true), mouseSens = Int(c, "mouseSens", 30),
                 mouseInvertX = c.Bool("mouseInvertX"), mouseInvertY = c.Bool("mouseInvertY"),
             };
+            if (!DisplayModes.Contains(s.displayMode)) s.displayMode = "window";
+            if (!FrameRates.Contains(s.frameRate)) s.frameRate = "60";
             s.LoadKeys(c.Str("keys"));
             s.cfg = c;
             return s;
@@ -245,12 +278,14 @@ namespace Sonic06Launcher
         void Save()
         {
             if (cfg == null) return;
-            cfg.Put("fullscreen", fullscreen); cfg.Put("windowSize", windowSize); cfg.Put("vsync", vsync);
+            cfg.Put("displayMode", displayMode); cfg.Put("fullscreen", Fullscreen); cfg.Put("windowSize", windowSize); cfg.Put("vsync", vsync);
             cfg.Put("language", language); cfg.Put("mute", mute); cfg.Put("keyboard", keyboard); cfg.Put("escCloses", escCloses);
             cfg.Put("aspect", aspect); cfg.Put("scaler", scaler); cfg.Put("sharpen", sharpen.ToString());
             cfg.Put("fxaa", fxaa); cfg.Put("aniso", aniso.ToString()); cfg.Put("brightness", brightness.ToString());
             cfg.Put("saturation", saturation.ToString()); cfg.Put("contrast", contrast.ToString());
             cfg.Put("resScale", resScale); cfg.Put("shaderAsync", shaderAsync);
+            cfg.Put("shadows", shadows); cfg.Put("fpsCounter", fpsCounter);
+            cfg.Put("frameRate", frameRate); cfg.Put("fullSpeed", fullSpeed);
             cfg.Put("adapter", adapter); cfg.Put("deadzone", deadzone.ToString());
             cfg.Put("mouseLook", mouseLook); cfg.Put("mouseSens", mouseSens.ToString());
             cfg.Put("mouseInvertX", mouseInvertX); cfg.Put("mouseInvertY", mouseInvertY);
@@ -270,11 +305,17 @@ namespace Sonic06Launcher
                     Brightness = Int(cfg, "my_brightness", 100); Aspect = cfg.Str("my_aspect", "keep");
                     Saturation = Int(cfg, "my_saturation", 100); Contrast = Int(cfg, "my_contrast", 100);
                     VSync = cfg.Bool("my_vsync", true); ShaderAsync = cfg.Bool("my_shaderAsync");
+                    Shadows = cfg.Bool("my_shadows", true); FrameRate = cfg.Str("my_frameRate", "60"); FullSpeed = cfg.Bool("my_fullSpeed");
                     break;
+                // For a PC that cannot hold 60 (issues #11, #15, #16): the lightest picture, no pause for
+                // shaders, and a steady 30 at the game's real speed. Shadows stay: turning them off did
+                // not raise the frame rate on the weak card it was measured on.
+                case "lowend": ResScale = "1"; Scaler = "bilinear"; Sharpen = 0; Fxaa = false; Aniso = 0;
+                    ShaderAsync = true; FrameRate = "30"; FullSpeed = true; break;
                 case "performance": ResScale = "1"; Scaler = "bilinear"; Sharpen = 0; Fxaa = false; Aniso = 0; break;
                 case "balanced": ResScale = "auto"; Scaler = "sharp"; Sharpen = 25; Fxaa = false; Aniso = 4; break;
                 case "quality": ResScale = "auto"; Scaler = "bicubic"; Sharpen = 40; Fxaa = true; Aniso = 16; break;
-                default: ResScale = "auto"; Scaler = "bilinear"; Sharpen = 0; Fxaa = false; Aniso = 0; Aspect = "keep"; Brightness = 100; Saturation = 100; Contrast = 100; VSync = true; ShaderAsync = false; break;
+                default: ResScale = "auto"; Scaler = "bilinear"; Sharpen = 0; Fxaa = false; Aniso = 0; Aspect = "keep"; Brightness = 100; Saturation = 100; Contrast = 100; VSync = true; ShaderAsync = false; Shadows = true; FrameRate = "60"; FullSpeed = false; break;
             }
         }
 
@@ -282,7 +323,9 @@ namespace Sonic06Launcher
         {
             var inv = System.Globalization.CultureInfo.InvariantCulture;
             var e = new Dictionary<string, string>();
-            if (Fullscreen) e["D3D12_FULLSCREEN"] = "1"; else e["D3D12_WINDOW"] = WindowSize;
+            if (DisplayMode == "exclusive") e["D3D12_FULLSCREEN"] = "exclusive";
+            else if (Fullscreen) e["D3D12_FULLSCREEN"] = "1";
+            else e["D3D12_WINDOW"] = WindowSize;
             if (!VSync) e["D3D12_VSYNC"] = "0";
             if (Language.Length > 0) e["PS3_LANG"] = Language;
             // These two are read as "set or not", so they are only set when on.
@@ -300,6 +343,11 @@ namespace Sonic06Launcher
             var res = EffectiveResScale();
             if (res != "1") e["D3D12_RES_SCALE"] = res;
             if (ShaderAsync) e["D3D12_SHADER_ASYNC"] = "1";
+            if (!Shadows) e["D3D12_SHADOWS"] = "0";
+            if (FpsCounter) e["D3D12_FPS"] = "1";
+            if (FrameRate != "60") e["SONIC06_FRAME_CAP"] = FrameRate;
+            if (FullSpeedForced) e["GCM_VBLANK_HZ"] = FrameRate;
+            if (FullSpeed || FullSpeedForced) e["SONIC06_VARIABLE_STEP"] = "1";
             if (Adapter.Length > 0) e["CELLMARK_ADAPTER"] = Adapter;
             if (Deadzone != 24) e["PAD_DEADZONE"] = Deadzone.ToString(inv);
             // Without PAD_KEYS the game has its own default map; "start=0" is a map with no key at all.

@@ -34,7 +34,13 @@ namespace Sonic06Launcher
         public GameSettings Settings { get; }
         public ObservableCollection<StatusItem> Status { get; } = new ObservableCollection<StatusItem>();
 
-        public Option[] ModeOptions { get; } = { new Option(false, "gfx_mode_window"), new Option(true, "gfx_mode_fullscreen") };
+        public Option[] ModeOptions { get; } =
+        {
+            new Option("window", "gfx_mode_window"), new Option("borderless", "gfx_mode_fullscreen"),
+            new Option("exclusive", "gfx_mode_exclusive"),
+        };
+        public Option[] FrameRateOptions { get; } = GameSettings.FrameRates
+            .Select(r => r == "60" ? new Option(r, "gfx_framerate_game") : new Option(r, null, r)).ToArray();
         // Between left-to-right marks, or a right-to-left page shows 1440 × 2560: an LRM before the
         // first number makes every number after it left-to-right, and the × between two of them too.
         // WPF ignores the isolates (LRI, PDI) and the embeddings (LRE, PDF): both still showed 1440 × 2560.
@@ -79,6 +85,7 @@ namespace Sonic06Launcher
         public bool Running => game != null && !game.HasExited;
         public bool CanPlay => ready && !Running && !busy;
         public bool WindowSizeEnabled => !Settings.Fullscreen;
+        public bool FullSpeedEnabled => !Settings.FullSpeedForced;
         public string PlayLabel => Loc.I[Running ? "play_running" : "play_button"];
         public string StateTitle => Loc.I[ready ? "play_ready" : "play_notready"];
         public string StateDetail => ready ? Loc.I["play_ready_detail"] : Loc.I.F("play_notready_detail", Status.Count(s => !s.Ok));
@@ -120,6 +127,7 @@ namespace Sonic06Launcher
             Settings.PropertyChanged += (s, e) =>
             {
                 if (e.PropertyName == nameof(GameSettings.Fullscreen)) N(nameof(WindowSizeEnabled));
+                if (e.PropertyName == nameof(GameSettings.FullSpeedForced)) N(nameof(FullSpeedEnabled));
                 if (e.PropertyName == "Keys") RefreshKeyRows();
             };
             for (var i = 0; i < GameSettings.Controls.Length; i++) KeyRows.Add(new KeyRow(this, i));

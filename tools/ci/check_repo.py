@@ -5,8 +5,9 @@
 
 1. Nothing from the game and nothing built from it: the project's rule (CONTRIBUTING.md).
    Paths under game/, work/, build/, deps/ or dist/; disc and executable images; frame
-   and shader dumps; this machine's local files; the maintainer's working notes and
-   agent instructions, which stay local.
+   and shader dumps; this machine's local files (*.local.md, *.local.json); the maintainer's
+   working notes, which stay local. AGENTS.md and CLAUDE.md are tracked on purpose, as the
+   generic agent guide, and must not contain machine paths (check 5).
 2. No file over 4 MB: everything the project tracks is text, small pictures or icons.
 3. Pictures and video only in docs/images and launcher/: the drawn banner, the logo
    and the launcher's own screenshots. Game screenshots go to releases, not git.
@@ -21,7 +22,7 @@ import json, pathlib, re, subprocess, sys
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 FORBIDDEN = re.compile(r"^(game|work|build|deps|dist)/|\.(iso|elf|self|sprx|bin|pkg|pup|bmp|dxbc)$"
                        r"|_dump\.hlsl$|\.local\.(md|json)$", re.I)
-NOTES = re.compile(r"^(\.claude/|CLAUDE\.md$|AGENTS[^/]*\.md$|docs/(?!images/)|tools/behind_the_scenes\.py$)", re.I)
+NOTES = re.compile(r"^(\.claude/|docs/(?!images/)|tools/behind_the_scenes\.py$)", re.I)
 MEDIA = re.compile(r"\.(png|jpe?g|gif|webp|bmp|mp4|webm|mov|avi|ico)$", re.I)
 MEDIA_OK = ("docs/images/", "launcher/")
 MAX_BYTES = 4 * 1024 * 1024
@@ -47,7 +48,7 @@ def path_problems(paths, size_of):
         if FORBIDDEN.search(p):
             bad.append(f"{p}: game files and anything built from them stay out of git")
         elif NOTES.search(p):
-            bad.append(f"{p}: working notes and agent instructions stay local, out of git")
+            bad.append(f"{p}: working notes stay local, out of git")
         elif MEDIA.search(p) and not p.startswith(MEDIA_OK):
             bad.append(f"{p}: pictures and video belong in docs/images or launcher/ (game screenshots go to releases)")
         elif size_of(p) > MAX_BYTES:
@@ -85,10 +86,10 @@ def selftest():
     sizes = {"docs/big.md": MAX_BYTES + 1}
     must_fail = ["game/disc/PS3_GAME/USRDIR/x.arc", "work/recompiled/a.c", "build/sonic06.exe", "EBOOT.BIN",
                  "foo/EBOOT.ELF", "disc.iso", "frame_000.bmp", "vs_12_dump.hlsl", "AGENTS.local.md",
-                 "docs/shot.png", "README-clip.mp4", "docs/big.md", "AGENTS.md", "CLAUDE.md",
+                 "docs/shot.png", "README-clip.mp4", "docs/big.md",
                  ".claude/launch.json", "docs/notes.md", "docs/diary/01.md"]
     must_pass = ["docs/images/banner.png", "launcher/app.ico", "launcher/logo.png", "CONTRIBUTING.md",
-                 "src/sonic06_config.c", "README.md"]
+                 "src/sonic06_config.c", "README.md", "AGENTS.md", "CLAUDE.md"]
     sizes["docs/images/big.png"] = MAX_BYTES + 1
     must_fail.append("docs/images/big.png")
     fails = {p for p in must_fail if path_problems([p], lambda q: sizes.get(q, 10))}
