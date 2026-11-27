@@ -2,6 +2,10 @@
 
 Soleanna is the project's name, and its launcher's; `sonic06-recomp` is the repository's.
 
+## 0.4.0 (in progress)
+
+- **Setup stopped at "ps3recomp with the project's patches" with "The system cannot find the file specified"** (#26): a tool on PATH can be a link whose target is gone, left by an uninstalled or moved program. The launcher counted it as installed and then could not start it. It now skips such links and goes on to the next copy on PATH, and when a program does not start, the message names the file.
+
 ## 0.3.0 (weaker PCs)
 
 Options for PCs that cannot hold 60 frames a second, 120 frames a second for fast PCs, and a setup fix.

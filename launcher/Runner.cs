@@ -37,7 +37,13 @@ namespace Sonic06Launcher
                 {
                     p.OutputDataReceived += (s, e) => { if (e.Data != null) onLine(Plain(e.Data)); };
                     p.ErrorDataReceived += (s, e) => { if (e.Data != null) onLine(Plain(e.Data)); };
-                    p.Start();
+                    // Windows' own message ("The system cannot find the file specified")
+                    // does not say which file, and in issue #26 it was the only line.
+                    try { p.Start(); }
+                    catch (System.ComponentModel.Win32Exception e)
+                    {
+                        throw new InvalidOperationException($"Could not start {file}: {e.Message}", e);
+                    }
                     p.BeginOutputReadLine();
                     p.BeginErrorReadLine();
                     p.WaitForExit();   // this overload also waits for the redirected streams
@@ -98,13 +104,33 @@ namespace Sonic06Launcher
         {
             foreach (var d in Env("Path").Split(';').Where(d => d.Length > 0))
             {
-                try { var f = Path.Combine(Environment.ExpandEnvironmentVariables(d.Trim()), exe); if (File.Exists(f)) return f; }
+                try { var f = Path.Combine(Environment.ExpandEnvironmentVariables(d.Trim()), exe); if (Usable(f)) return f; }
                 catch (ArgumentException) { }
             }
             return null;
         }
 
-        static string First(params string[] candidates) => candidates.FirstOrDefault(c => c != null && File.Exists(c));
+        /// <summary>
+        /// A file that is there and can be started. A link whose target is gone, left by a
+        /// tool that was uninstalled or moved, passes File.Exists, and then Process.Start
+        /// fails with "The system cannot find the file specified" (issue #26): opening it
+        /// fails with FileNotFound. A Store app alias (WindowsApps\pwsh.exe) cannot be
+        /// opened as a file either, but with another error, and it starts.
+        /// </summary>
+        static bool Usable(string f)
+        {
+            if (f == null || !File.Exists(f)) return false;
+            try
+            {
+                if ((File.GetAttributes(f) & FileAttributes.ReparsePoint) == 0) return true;
+                using (File.OpenRead(f)) return true;
+            }
+            catch (FileNotFoundException) { return false; }
+            catch (DirectoryNotFoundException) { return false; }
+            catch (Exception) { return true; }
+        }
+
+        static string First(params string[] candidates) => candidates.FirstOrDefault(Usable);
 
         public static string Pwsh() => First(OnPath("pwsh.exe"), Path.Combine(Env("ProgramFiles"), "PowerShell", "7", "pwsh.exe"));
         public static string Git() => First(OnPath("git.exe"), Path.Combine(Env("ProgramFiles"), "Git", "cmd", "git.exe"));
