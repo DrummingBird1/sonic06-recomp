@@ -45,6 +45,11 @@ namespace Sonic06Launcher
         // first number makes every number after it left-to-right, and the × between two of them too.
         // WPF ignores the isolates (LRI, PDI) and the embeddings (LRE, PDF): both still showed 1440 × 2560.
         public Option[] SizeOptions { get; } = GameSettings.Sizes.Select(s => new Option(s, null, "‎" + s.Replace("x", " × ") + "‎")).ToArray();
+        public Option[] FsModeOptions { get; } = new[] { new Option("", "gfx_fsmode_desktop") }
+            .Concat(GameSettings.ScreenModes().Select(s => new Option(s, null, "‎" + s.Replace("x", " × ") + "‎"))).ToArray();
+        // The layout check shows it too, so its text is checked in every language.
+        bool checkingLayout;
+        public bool FsModeVisible => checkingLayout || Settings.DisplayMode == "exclusive";
         public Option[] AspectOptions { get; } = { new Option("keep", "gfx_aspect_keep"), new Option("stretch", "gfx_aspect_stretch") };
         public Option[] ScalerOptions { get; } =
         {
@@ -127,6 +132,7 @@ namespace Sonic06Launcher
             Settings.PropertyChanged += (s, e) =>
             {
                 if (e.PropertyName == nameof(GameSettings.Fullscreen)) N(nameof(WindowSizeEnabled));
+                if (e.PropertyName == nameof(GameSettings.DisplayMode)) N(nameof(FsModeVisible));
                 if (e.PropertyName == nameof(GameSettings.FullSpeedForced)) N(nameof(FullSpeedEnabled));
                 if (e.PropertyName == "Keys") RefreshKeyRows();
             };
@@ -482,6 +488,7 @@ namespace Sonic06Launcher
             var found = new List<string>();
             var pages = new[] { NavPlay, NavSetup, NavGraphics, NavSettings, NavSupport };
             var start = Loc.I.Code;
+            checkingLayout = true; N(nameof(FsModeVisible));
             foreach (var size in new[] { new Size(Width, Height), new Size(MinWidth, MinHeight) })
             {
                 Width = size.Width;
@@ -499,6 +506,7 @@ namespace Sonic06Launcher
                 }
             }
             Loc.I.Set(start);
+            checkingLayout = false; N(nameof(FsModeVisible));
             return found;
         }
 

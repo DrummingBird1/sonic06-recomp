@@ -132,14 +132,14 @@ Every control takes up to two keys or mouse buttons on the **Settings** page, wh
 
 ## Graphics
 
-- Window, borderless or exclusive fullscreen, window size, aspect ratio (keep 16:9 or stretch) and VSync
+- Window, borderless or exclusive fullscreen, window size, the screen resolution in exclusive fullscreen, aspect ratio (keep 16:9 or stretch) and VSync
 - **For PCs that cannot hold 60 fps**: the game normally slows down with the frame rate, as on the console. "Keep the game at full speed" (experimental) moves it by the real time between frames, and a frame rate of 30 holds a steady 30. Shadows can be turned off.
 - **120 frames per second** (experimental) for fast screens, at the game's real speed
 - A frame rate counter in the corner of the picture
-- **Internal resolution**: the size the game draws at, from 1280×720 as on the PS3 up to 3840×2160, or automatic, which matches your window. Set above your window, it is supersampling: every pixel is the average of everything drawn under it, which smooths the edges.
+- **Internal resolution**: the size the game draws at, from 640×360 for a weak graphics card, through 1280×720 as on the PS3, up to 3840×2160, or automatic, which matches your window. Set above your window, it is supersampling: every pixel is the average of everything drawn under it, which smooths the edges.
 - Upscaling filter (smooth, sharp pixels, bicubic, nearest), sharpening, FXAA and texture filtering
 - Brightness, saturation and contrast
-- A "Weak PC" preset (the lightest picture, a steady 30 at full speed), performance, balanced and quality presets, and one of your own
+- A "Weak PC" preset (the lightest picture at 960×540, a steady 30 at full speed), performance, balanced and quality presets, and one of your own
 - Shaders are kept on disk after their first use. The first time a scene appears there can be a short pause while its shaders compile; "Compile shaders in the background" removes it, and some objects can then appear a few frames late.
 - <kbd>F12</kbd> saves a screenshot in `Pictures\Sonic06`.
 

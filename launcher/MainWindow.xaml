@@ -333,6 +333,15 @@
                                     <ComboBox Grid.Column="1" ItemsSource="{Binding SizeOptions}" SelectedValuePath="Value"
                                               SelectedValue="{Binding Settings.WindowSize}" IsEnabled="{Binding WindowSizeEnabled}"/>
                                 </Grid>
+                                <Grid Style="{StaticResource Row}" Visibility="{Binding FsModeVisible, Converter={StaticResource BoolVis}}">
+                                    <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                                    <StackPanel>
+                                        <TextBlock Text="{l:T gfx_fsmode}"/>
+                                        <TextBlock Text="{l:T gfx_fsmode_desc}" Style="{StaticResource Sub}"/>
+                                    </StackPanel>
+                                    <ComboBox Grid.Column="1" ItemsSource="{Binding FsModeOptions}" SelectedValuePath="Value"
+                                              SelectedValue="{Binding Settings.FsMode}" VerticalAlignment="Center"/>
+                                </Grid>
                                 <Grid Style="{StaticResource Row}">
                                     <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                                     <TextBlock Text="{l:T gfx_aspect}" VerticalAlignment="Center"/>
