@@ -5,6 +5,7 @@ Soleanna is the project's name, and its launcher's; `sonic06-recomp` is the repo
 ## 0.4.0 (in progress)
 
 - **Setup stopped at "ps3recomp with the project's patches" with "The system cannot find the file specified"** (#26): a tool on PATH can be a link whose target is gone, left by an uninstalled or moved program. The launcher counted it as installed and then could not start it. It now skips such links and goes on to the next copy on PATH, and when a program does not start, the message names the file.
+- **Exclusive fullscreen showed a black screen with sound on a GT730** (#23): the game now resizes its buffers after entering exclusive fullscreen, as DirectX asks, and if the driver keeps failing to show frames there, it goes back to the borderless window by itself. Tested with planted failures on one PC, not yet on a GT730.
 
 ## 0.3.0 (weaker PCs)
 

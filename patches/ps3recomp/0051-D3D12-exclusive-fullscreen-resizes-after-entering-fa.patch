@@ -1,0 +1,91 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: DrummingBird1 <1979036+DrummingBird1@users.noreply.github.com>
+Date: Fri, 27 Nov 2026 18:23:31 +0200
+Subject: [PATCH] D3D12: exclusive fullscreen resizes after entering, falls
+ back when presents fail
+
+Entering exclusive fullscreen at start-up now asks the first present pass
+for a ResizeBuffers, as the re-entry after Alt+Tab already did: DXGI wants
+one after every switch, even when the size stays.
+
+Present's result was not looked at. Now the first failure is logged with
+its code, and three failed presents in a row while exclusive fullscreen is
+on leave it for the borderless window. A GT730 showed a black screen with
+the sound going on in exclusive fullscreen (Soleanna issue #23).
+
+Tested on an RTX 4070 SUPER only: exclusive on, Alt+Tab out and back, a
+clean WM_CLOSE. With five failed presents planted from present 900, the
+log said "presents fail, borderless instead", the picture went on in the
+borderless window and flips continued to the close. During Alt+Tab Present
+returns DXGI_ERROR_INVALID_CALL while the window is out of focus; that is
+not counted. Whether this is what the GT730 does is not known.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ libs/video/rsx_d3d12_backend.c | 30 ++++++++++++++++++++++++------
+ 1 file changed, 24 insertions(+), 6 deletions(-)
+
+diff --git a/libs/video/rsx_d3d12_backend.c b/libs/video/rsx_d3d12_backend.c
+index 559d85a8..f7244345 100644
+--- a/libs/video/rsx_d3d12_backend.c
++++ b/libs/video/rsx_d3d12_backend.c
+@@ -306,7 +306,7 @@ typedef struct {
+      * for; fs_on is whether the swap chain is in it now (Alt+Tab leaves it);
+      * fs_retry asks the present thread to enter it again. */
+     int                        exclusive;
+-    volatile LONG              fs_on, fs_retry;
++    volatile LONG              fs_on, fs_retry, fs_resize;
+     ID3D12DescriptorHeap*      rtv_heap;
+     u32                        rtv_descriptor_size;
+     ID3D12Resource*            render_targets[FRAME_COUNT];
+@@ -1272,7 +1272,9 @@ static int init_d3d12(u32 width, u32 height)
+     if (s_d3d.exclusive) {
+         HRESULT fh = swap_chain1->lpVtbl->SetFullscreenState(swap_chain1, TRUE, NULL);
+         printf("[D3D12] exclusive fullscreen: %s (0x%08lX)\n", SUCCEEDED(fh) ? "on" : "refused, borderless instead", fh);
+-        if (SUCCEEDED(fh)) InterlockedExchange(&s_d3d.fs_on, 1);
++        /* DXGI asks for ResizeBuffers after the switch even when the size stays:
++         * the first present pass does it (issue #23, a black screen on a GT730). */
++        if (SUCCEEDED(fh)) { InterlockedExchange(&s_d3d.fs_on, 1); InterlockedExchange(&s_d3d.fs_resize, 1); }
+         else s_d3d.exclusive = 0;
+     }
+ 
+@@ -5540,7 +5542,7 @@ static void pp_resize_if_needed(void)
+ {
+     /* Back from Alt+Tab with exclusive fullscreen asked for: enter it again.
+      * DXGI asks for ResizeBuffers after each change, size or not. */
+-    int force = 0;
++    int force = InterlockedExchange(&s_d3d.fs_resize, 0) != 0;
+     if (s_d3d.exclusive && InterlockedExchange(&s_d3d.fs_retry, 0)) {
+         BOOL now = FALSE;
+         s_d3d.swap_chain->lpVtbl->GetFullscreenState(s_d3d.swap_chain, &now, NULL);
+@@ -7192,11 +7194,27 @@ skip_dump_consider: ;
+         const uint64_t ft_p0 = PS3_FT_ON() ? ps3_ft_now() : 0;
+         LARGE_INTEGER q0 = {0}, q1, qf;
+         if (latency_log_on()) QueryPerformanceCounter(&q0);
++        HRESULT ph;
+         if (!d3d12_vsync_off())
+-            s_d3d.swap_chain->lpVtbl->Present(s_d3d.swap_chain, 1, 0);
++            ph = s_d3d.swap_chain->lpVtbl->Present(s_d3d.swap_chain, 1, 0);
+         else   /* exclusive fullscreen tears by itself; DXGI rejects the flag there */
+-            s_d3d.swap_chain->lpVtbl->Present(s_d3d.swap_chain, 0,
+-                                              s_d3d.tearing && !s_d3d.fs_on ? DXGI_PRESENT_ALLOW_TEARING : 0);
++            ph = s_d3d.swap_chain->lpVtbl->Present(s_d3d.swap_chain, 0,
++                                                   s_d3d.tearing && !s_d3d.fs_on ? DXGI_PRESENT_ALLOW_TEARING : 0);
++        /* A driver that takes exclusive fullscreen and then fails every present
++         * leaves a black screen with the sound going on (issue #23): after a few
++         * failures in a row, back to the borderless window. OCCLUDED (Alt+Tab) is
++         * a success code and does not count. */
++        { static int fails = 0, logged = 0;
++          if (FAILED(ph)) {
++              if (!logged) { logged = 1; printf("[D3D12] Present failed (0x%08lX)%s\n", ph, s_d3d.fs_on ? " in exclusive fullscreen" : ""); }
++              if (s_d3d.exclusive && s_d3d.fs_on && ++fails >= 3) {
++                  printf("[D3D12] exclusive fullscreen: presents fail, borderless instead\n");
++                  fs_leave();
++                  s_d3d.exclusive = 0;
++                  InterlockedExchange(&s_d3d.fs_resize, 1);
++                  fails = 0;
++              }
++          } else fails = 0; }
+         if (ft_p0) ps3_ft_span(PS3_FT_PRESENT, 0, 0, 0, ft_p0, ps3_ft_now());
+         if (q0.QuadPart) {
+             QueryPerformanceCounter(&q1); QueryPerformanceFrequency(&qf);
