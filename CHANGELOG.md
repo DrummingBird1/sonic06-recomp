@@ -2,6 +2,16 @@
 
 Soleanna is the project's name, and its launcher's; `sonic06-recomp` is the repository's.
 
+## 0.4.0 (fixes from player reports)
+
+Fixes for what players reported after 0.3.0, and a new launcher language. The DirectX 11 backend that players asked for is planned as the next version.
+
+- **Setup stopped at "ps3recomp with the project's patches" with "The system cannot find the file specified"** (#26): a tool on PATH can be a link whose target is gone, left by an uninstalled or moved program. The launcher counted it as installed and then could not start it. It now skips such links and goes on to the next copy on PATH, and when a program does not start, the message names the file.
+- **Exclusive fullscreen showed a black screen with sound on a GT730** (#23): the game now resizes its buffers after entering exclusive fullscreen, as DirectX asks, and if the driver keeps failing to show frames there, it goes back to the borderless window by itself. Tested with planted failures on one PC, not yet on a GT730.
+- **Simplified Chinese** (#22): the launcher's eleventh language, from a player's translation, completed for every string. It is picked by itself on a Simplified Chinese Windows.
+- **Choppy motion at low frame rates with full speed on** (#24): measured, not changed. At a steady 30 the game moves by even steps; the jumps come from long frames on a PC that falls well below 30, so the fix is in speed, not in timing.
+- **Updating from 0.3.0** builds the game again (about 15 minutes), because the fix for #23 is in the project's changes to ps3recomp. What came from your disc stays.
+
 ## 0.3.0 (weaker PCs)
 
 Options for PCs that cannot hold 60 frames a second, 120 frames a second for fast PCs, and a setup fix.
