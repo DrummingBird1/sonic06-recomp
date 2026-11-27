@@ -1,0 +1,129 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: DrummingBird1 <1979036+DrummingBird1@users.noreply.github.com>
+Date: Fri, 27 Nov 2026 21:29:03 +0200
+Subject: [PATCH] D3D12: internal resolution down to x0.5; a screen mode for
+ exclusive fullscreen
+
+D3D12_RES_SCALE now takes 0.5..4: below 1 the game draws fewer pixels than its
+own 1280x720, for graphics cards that cannot fill it. D3D12_FS_MODE=<w>x<h>
+picks the closest screen mode the monitor has in exclusive fullscreen, after
+each switch into it.
+---
+ libs/video/rsx_d3d12_backend.c | 55 ++++++++++++++++++++++++++++++----
+ 1 file changed, 50 insertions(+), 5 deletions(-)
+
+diff --git a/libs/video/rsx_d3d12_backend.c b/libs/video/rsx_d3d12_backend.c
+index f7244345..50969ebe 100644
+--- a/libs/video/rsx_d3d12_backend.c
++++ b/libs/video/rsx_d3d12_backend.c
+@@ -307,6 +307,7 @@ typedef struct {
+      * fs_retry asks the present thread to enter it again. */
+     int                        exclusive;
+     volatile LONG              fs_on, fs_retry, fs_resize;
++    u32                        fs_w, fs_h;  /* D3D12_FS_MODE, 0 for the desktop's mode */
+     ID3D12DescriptorHeap*      rtv_heap;
+     u32                        rtv_descriptor_size;
+     ID3D12Resource*            render_targets[FRAME_COUNT];
+@@ -451,7 +452,9 @@ static u64 s_req_verts = 0, s_req_draws = 0, s_drop_draws = 0;
+  * Feeding it the previous frame costs one frame of latency, which for a water
+  * reflection is not visible. */
+ static ID3D12Resource* s_screen_copy = NULL;
+-/* D3D12_RES_SCALE=1..4: the internal resolution, as a multiple of the guest's.
++/* D3D12_RES_SCALE=0.5..4: the internal resolution, as a multiple of the guest's.
++ * Below 1 the game draws fewer pixels than its own 1280x720, for graphics cards
++ * that cannot fill it (a GT730, issue #24); the present pass scales it up.
+  * Every surface keeps its guest size in its w/h and every draw record stays in
+  * guest pixels; only the D3D12 resources, and the pixel rectangles handed to
+  * the rasterizer and to copies, are multiplied. Needs the present pass, which
+@@ -710,7 +713,8 @@ static u32    s_lock_n  = 0;
+  *   D3D12_SHARPEN=0..1                            contrast-adaptive, after AMD's CAS
+  *   D3D12_BRIGHTNESS=0.5..1.5                     a gamma curve, so nothing clips
+  *   D3D12_SATURATION=0..2, D3D12_CONTRAST=0.5..1.5   1 = the game's own colours
+- *   D3D12_RES_SCALE=1..4                          internal resolution (see s_rs)
++ *   D3D12_RES_SCALE=0.5..4                        internal resolution (see s_rs)
++ *   D3D12_FS_MODE=<w>x<h>                         screen mode in exclusive fullscreen
+  *   D3D12_LATENCY_LOG=1                           how long a frame is held at the present, every 5 s
+  *
+  * A guest frame larger than the window (an internal resolution above it) is
+@@ -763,7 +767,7 @@ static void pp_read_env(void)
+     s_pp.fps_on = e && *e == '1';
+     e = getenv("D3D12_RES_SCALE");
+     s_rs = e ? (float)atof(e) : 1.f;
+-    if (!(s_rs >= 1.f && s_rs <= 4.f) || !s_pp.on) s_rs = 1.f;
++    if (!(s_rs >= 0.5f && s_rs <= 4.f) || !s_pp.on) s_rs = 1.f;
+     printf("[D3D12] present pass %s: scaler %.0f aspect %s fxaa %.0f sharpen %.2f brightness %.2f"
+            " saturation %.2f contrast %.2f internal resolution x%.2f\n",
+            s_pp.on ? "on" : "off", s_pp.scaler, s_pp.keep_aspect ? "keep" : "stretch",
+@@ -789,6 +793,37 @@ static void fs_leave(void)
+     }
+ }
+ 
++/* D3D12_FS_MODE=<w>x<h>: the screen mode in exclusive fullscreen (issue #23),
++ * or the closest one the monitor has; without it the desktop's mode stays.
++ * Each switch into fullscreen keeps the window's size, so this follows every
++ * one of them. The mode change sends WM_SIZE, and the present pass resizes. */
++static void fs_apply_mode(IDXGISwapChain* sc)
++{
++    if (!s_d3d.fs_w || !s_d3d.fs_h) return;
++    IDXGIOutput* out = NULL;
++    HRESULT hr = sc->lpVtbl->GetContainingOutput(sc, &out);
++    if (FAILED(hr) || !out) {
++        printf("[D3D12] exclusive fullscreen mode: no output (0x%08lX), the desktop's stays\n", hr);
++        return;
++    }
++    DXGI_MODE_DESC want = {0}, got = {0};
++    want.Width = s_d3d.fs_w; want.Height = s_d3d.fs_h;
++    want.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
++    hr = out->lpVtbl->FindClosestMatchingMode(out, &want, &got, NULL);
++    out->lpVtbl->Release(out);
++    if (SUCCEEDED(hr)) hr = sc->lpVtbl->ResizeTarget(sc, &got);
++    if (FAILED(hr)) {
++        printf("[D3D12] exclusive fullscreen mode %ux%u: failed (0x%08lX), the desktop's stays\n",
++               s_d3d.fs_w, s_d3d.fs_h, hr);
++        return;
++    }
++    printf("[D3D12] exclusive fullscreen mode: %ux%u at %.2f Hz (asked for %ux%u)\n",
++           got.Width, got.Height,
++           got.RefreshRate.Denominator ? (double)got.RefreshRate.Numerator / got.RefreshRate.Denominator : 0.0,
++           s_d3d.fs_w, s_d3d.fs_h);
++    InterlockedExchange(&s_d3d.fs_resize, 1);
++}
++
+ static LRESULT CALLBACK d3d12_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
+ {
+     switch (msg) {
+@@ -1077,6 +1112,10 @@ static HWND create_window(u32 width, u32 height, const char* title)
+       if (e && strcmp(e, "0")) {
+           const POINT origin = {0, 0};
+           s_d3d.exclusive = !strcmp(e, "exclusive");
++          const char* m = getenv("D3D12_FS_MODE"); unsigned mw = 0, mh = 0;
++          if (s_d3d.exclusive && m && sscanf(m, "%ux%u", &mw, &mh) == 2 && mw >= 640 && mh >= 360) {
++              s_d3d.fs_w = mw; s_d3d.fs_h = mh;
++          }
+           MONITORINFO mi;
+           mi.cbSize = sizeof mi;
+           if (GetMonitorInfoA(MonitorFromPoint(origin, MONITOR_DEFAULTTOPRIMARY), &mi)) {
+@@ -1274,7 +1313,10 @@ static int init_d3d12(u32 width, u32 height)
+         printf("[D3D12] exclusive fullscreen: %s (0x%08lX)\n", SUCCEEDED(fh) ? "on" : "refused, borderless instead", fh);
+         /* DXGI asks for ResizeBuffers after the switch even when the size stays:
+          * the first present pass does it (issue #23, a black screen on a GT730). */
+-        if (SUCCEEDED(fh)) { InterlockedExchange(&s_d3d.fs_on, 1); InterlockedExchange(&s_d3d.fs_resize, 1); }
++        if (SUCCEEDED(fh)) {
++            InterlockedExchange(&s_d3d.fs_on, 1); InterlockedExchange(&s_d3d.fs_resize, 1);
++            fs_apply_mode((IDXGISwapChain*)swap_chain1);
++        }
+         else s_d3d.exclusive = 0;
+     }
+ 
+@@ -5550,7 +5592,10 @@ static void pp_resize_if_needed(void)
+             wait_for_gpu();
+             HRESULT fh = s_d3d.swap_chain->lpVtbl->SetFullscreenState(s_d3d.swap_chain, TRUE, NULL);
+             printf("[D3D12] exclusive fullscreen again: %s (0x%08lX)\n", SUCCEEDED(fh) ? "on" : "refused", fh);
+-            if (SUCCEEDED(fh)) { InterlockedExchange(&s_d3d.fs_on, 1); force = 1; }
++            if (SUCCEEDED(fh)) {
++                InterlockedExchange(&s_d3d.fs_on, 1); force = 1;
++                fs_apply_mode((IDXGISwapChain*)s_d3d.swap_chain);
++            }
+         } else {
+             InterlockedExchange(&s_d3d.fs_on, 1);
+             printf("[D3D12] exclusive fullscreen: still on when the window came back\n");

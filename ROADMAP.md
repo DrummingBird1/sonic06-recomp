@@ -4,14 +4,14 @@ The current state and the open questions, built from the changelog, the README a
 
 ## Where it stands
 
-- **Latest version:** 0.4.0: setup no longer stops on a leftover link to a removed tool (#26), exclusive fullscreen goes back to borderless when the driver cannot show frames (#23), and the launcher speaks Simplified Chinese (#22). 0.3.0 brought the options for PCs that cannot hold 60 frames per second: real speed when frames drop, 30 and 120 fps, a "Weak PC" preset, exclusive fullscreen, a shadows switch and a frame rate counter. See [CHANGELOG.md](CHANGELOG.md).
+- **Latest version:** 0.4.0: setup no longer stops on a leftover link to a removed tool (#26), exclusive fullscreen goes back to borderless when the driver cannot show frames (#23), the internal resolution can go below the PS3's 1280×720 and exclusive fullscreen can use a lower screen resolution, for weak graphics cards (#24, #23), and the launcher speaks Simplified Chinese (#22). 0.3.0 brought the options for PCs that cannot hold 60 frames per second: real speed when frames drop, 30 and 120 fps, a "Weak PC" preset, exclusive fullscreen, a shadows switch and a frame rate counter. See [CHANGELOG.md](CHANGELOG.md).
 - **What runs:** the title screen, menus and movies, the story to Soleanna's town, and every boss and stage entry, each started without a crash in tests of about a minute.
 - **Outside reports:** a player with a GT730 and an i5-4590 cleared Sonic's episode with S ranks (#16) and Silver's at 100% (#25). They see about 17 fps in Soleanna town (#24). On the maintainer's PC the town holds 57-60 fps even on one CPU core, so the limit there looks like the graphics card or its DirectX 12 driver; a log from that PC was asked for in #24.
 
 ## Now: confirm 0.4.0 on other PCs
 
 - **#26, #23:** fixed in 0.4.0, each reproduced or tested on the maintainer's PC only. Not yet confirmed by the reporters.
-- **#24:** the GT730 log decides how much a DirectX 11 backend would help.
+- **#24:** the GT730 log decides how much a DirectX 11 backend would help, and whether the lower internal resolution in 0.4.0 helps that card.
 - **#9, #10, #11:** fixed in 0.2.0. They stay open until the reporters confirm.
 - **#15, #16:** the full-speed option and the sound fix were measured on the maintainer's PC only, the sound one with 4 cores to stand in for an i5-4590. Reports from weak PCs decide whether full speed can become the default.
 - **#14, black screen:** the issue has only the empty template. It needs details or a bug report from the reporter.

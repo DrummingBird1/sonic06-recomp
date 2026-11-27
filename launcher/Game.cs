@@ -18,7 +18,7 @@ namespace Sonic06Launcher
         public event PropertyChangedEventHandler PropertyChanged;
 
         bool vsync = true, mute, keyboard = true, fxaa, escCloses, shaderAsync, shadows = true, fpsCounter, fullSpeed;
-        string frameRate = "60", displayMode = "window", windowSize = "1280x720", language = "", aspect = "keep", scaler = "bilinear", resScale = "auto";
+        string frameRate = "60", displayMode = "window", windowSize = "1280x720", fsMode = "", language = "", aspect = "keep", scaler = "bilinear", resScale = "auto";
         int sharpen, aniso, brightness = 100, saturation = 100, contrast = 100, deadzone = 24;
         string adapter = "";
         bool mouseLook = true, mouseInvertX, mouseInvertY;
@@ -42,6 +42,20 @@ namespace Sonic06Launcher
         }
         public bool Fullscreen => displayMode != "window";
         public string WindowSize { get => windowSize; set => Set(ref windowSize, value); }
+        // The screen mode in exclusive fullscreen, D3D12_FS_MODE (issue #23); "" keeps the desktop's.
+        // A lower mode costs the graphics card a little less at the present; the internal
+        // resolution is what lowers the game's own drawing.
+        public string FsMode { get => fsMode; set => Set(ref fsMode, value ?? ""); }
+        public static readonly string[] FsModes = { "3840x2160", "2560x1440", "1920x1080", "1600x900", "1366x768", "1280x720", "1024x768", "854x480", "640x480" };
+
+        /// <summary>The modes to offer: those the primary screen has, all of them if Windows does not say.</summary>
+        public static string[] ScreenModes()
+        {
+            HashSet<(int, int)> have;
+            try { have = Native.ScreenModes(); } catch (Exception) { have = new HashSet<(int, int)>(); }
+            if (have.Count == 0) return FsModes;
+            return FsModes.Where(m => { var wh = m.Split('x'); return have.Contains((int.Parse(wh[0]), int.Parse(wh[1]))); }).ToArray();
+        }
         public bool VSync { get => vsync; set => Set(ref vsync, value); }
         public string Language { get => language; set => Set(ref language, value ?? ""); }
         public bool Mute { get => mute; set => Set(ref mute, value); }
@@ -192,7 +206,9 @@ namespace Sonic06Launcher
         }
 
         public static readonly string[] Sizes = { "1280x720", "1600x900", "1920x1080", "2560x1440", "3840x2160" };
-        public static readonly string[] ResScales = { "1", "1.5", "2", "3" };
+        // Below 1 the game draws fewer pixels than the PS3's 1280x720, for graphics cards that
+        // cannot keep up (a GT730, issue #24). Automatic never picks those.
+        public static readonly string[] ResScales = { "0.5", "0.75", "1", "1.5", "2", "3" };
         static readonly System.Globalization.CultureInfo Inv = System.Globalization.CultureInfo.InvariantCulture;
 
         /// <summary>The size the game draws at for a scale, as "2560 × 1440".</summary>
@@ -208,7 +224,9 @@ namespace Sonic06Launcher
         {
             if (ResScale != "auto") return ResScales.Contains(ResScale) ? ResScale : "1";
             int w, h;
-            if (Fullscreen)
+            var mode = DisplayMode == "exclusive" ? FsMode.Split('x') : new string[0];
+            if (mode.Length == 2 && int.TryParse(mode[0], out w) && int.TryParse(mode[1], out h)) { }
+            else if (Fullscreen)
             {
                 var b = System.Windows.Forms.Screen.PrimaryScreen.Bounds;   // pixels: the launcher is DPI-aware
                 w = b.Width; h = b.Height;
@@ -220,7 +238,7 @@ namespace Sonic06Launcher
             }
             // Keep: the picture is as large as the smaller side allows. Stretch: it fills both.
             double need = Aspect == "stretch" ? Math.Max(w / 1280.0, h / 720.0) : Math.Min(w / 1280.0, h / 720.0);
-            return ResScales.FirstOrDefault(s => double.Parse(s, Inv) >= need - 0.05) ?? ResScales.Last();
+            return ResScales.Where(s => double.Parse(s, Inv) >= 1).FirstOrDefault(s => double.Parse(s, Inv) >= need - 0.05) ?? ResScales.Last();
         }
         // The languages the European disc carries, as PS3_LANG codes; "" is the Windows language.
         public static readonly (string Code, string Key)[] GameLanguages =
@@ -256,7 +274,7 @@ namespace Sonic06Launcher
             var s = new GameSettings
             {
                 // Launchers before 0.3.0 kept only "fullscreen", which meant borderless.
-                displayMode = c.Str("displayMode", c.Bool("fullscreen") ? "borderless" : "window"), windowSize = c.Str("windowSize", DefaultSize()), vsync = c.Bool("vsync", true),
+                displayMode = c.Str("displayMode", c.Bool("fullscreen") ? "borderless" : "window"), windowSize = c.Str("windowSize", DefaultSize()), fsMode = c.Str("fsMode"), vsync = c.Bool("vsync", true),
                 language = c.Str("language"), mute = c.Bool("mute"), keyboard = c.Bool("keyboard", true),
                 escCloses = c.Bool("escCloses"), aspect = c.Str("aspect", "keep"), scaler = c.Str("scaler", "bilinear"),
                 sharpen = Int(c, "sharpen", 0), fxaa = c.Bool("fxaa"), aniso = Int(c, "aniso", 0), brightness = Int(c, "brightness", 100),
@@ -278,7 +296,7 @@ namespace Sonic06Launcher
         void Save()
         {
             if (cfg == null) return;
-            cfg.Put("displayMode", displayMode); cfg.Put("fullscreen", Fullscreen); cfg.Put("windowSize", windowSize); cfg.Put("vsync", vsync);
+            cfg.Put("displayMode", displayMode); cfg.Put("fullscreen", Fullscreen); cfg.Put("windowSize", windowSize); cfg.Put("fsMode", fsMode); cfg.Put("vsync", vsync);
             cfg.Put("language", language); cfg.Put("mute", mute); cfg.Put("keyboard", keyboard); cfg.Put("escCloses", escCloses);
             cfg.Put("aspect", aspect); cfg.Put("scaler", scaler); cfg.Put("sharpen", sharpen.ToString());
             cfg.Put("fxaa", fxaa); cfg.Put("aniso", aniso.ToString()); cfg.Put("brightness", brightness.ToString());
@@ -307,10 +325,11 @@ namespace Sonic06Launcher
                     VSync = cfg.Bool("my_vsync", true); ShaderAsync = cfg.Bool("my_shaderAsync");
                     Shadows = cfg.Bool("my_shadows", true); FrameRate = cfg.Str("my_frameRate", "60"); FullSpeed = cfg.Bool("my_fullSpeed");
                     break;
-                // For a PC that cannot hold 60 (issues #11, #15, #16): the lightest picture, no pause for
-                // shaders, and a steady 30 at the game's real speed. Shadows stay: turning them off did
-                // not raise the frame rate on the weak card it was measured on.
-                case "lowend": ResScale = "1"; Scaler = "bilinear"; Sharpen = 0; Fxaa = false; Aniso = 0;
+                // For a PC that cannot hold 60 (issues #11, #15, #16, #24): the lightest picture, drawn
+                // below the PS3's 1280x720, no pause for shaders, and a steady 30 at the game's real speed.
+                // Shadows stay: turning them off did not raise the frame rate on the weak card it was
+                // measured on.
+                case "lowend": ResScale = "0.75"; Scaler = "bilinear"; Sharpen = 0; Fxaa = false; Aniso = 0;
                     ShaderAsync = true; FrameRate = "30"; FullSpeed = true; break;
                 case "performance": ResScale = "1"; Scaler = "bilinear"; Sharpen = 0; Fxaa = false; Aniso = 0; break;
                 case "balanced": ResScale = "auto"; Scaler = "sharp"; Sharpen = 25; Fxaa = false; Aniso = 4; break;
@@ -323,7 +342,7 @@ namespace Sonic06Launcher
         {
             var inv = System.Globalization.CultureInfo.InvariantCulture;
             var e = new Dictionary<string, string>();
-            if (DisplayMode == "exclusive") e["D3D12_FULLSCREEN"] = "exclusive";
+            if (DisplayMode == "exclusive") { e["D3D12_FULLSCREEN"] = "exclusive"; if (FsMode.Length > 0) e["D3D12_FS_MODE"] = FsMode; }
             else if (Fullscreen) e["D3D12_FULLSCREEN"] = "1";
             else e["D3D12_WINDOW"] = WindowSize;
             if (!VSync) e["D3D12_VSYNC"] = "0";
