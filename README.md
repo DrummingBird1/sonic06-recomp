@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/DrummingBird1/sonic06-recomp/releases/tag/v0.3.0"><img alt="Version 0.3.0" src="https://img.shields.io/badge/version-0.3.0-e8641e"></a>
+  <a href="https://github.com/DrummingBird1/sonic06-recomp/releases/tag/v0.4.0"><img alt="Version 0.4.0" src="https://img.shields.io/badge/version-0.4.0-e8641e"></a>
   <img alt="Status: work in progress" src="https://img.shields.io/badge/status-work%20in%20progress-f59e0b">
   <img alt="Windows 10 and 11" src="https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-2c3e8f">
   <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-2f9e6e"></a>
@@ -15,7 +15,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/DrummingBird1/sonic06-recomp/releases/tag/v0.3.0"><b>Download 0.3.0</b></a> ·
+  <a href="https://github.com/DrummingBird1/sonic06-recomp/releases/tag/v0.4.0"><b>Download 0.4.0</b></a> ·
   <a href="#screenshots">Screenshots</a> ·
   <a href="#getting-started">Getting started</a> ·
   <a href="#status">Status</a> ·
@@ -25,7 +25,7 @@
 </p>
 
 > [!IMPORTANT]
-> **Version 0.3.0 is an early work in progress.** Every stage and boss starts. One player has reported finishing Sonic's story on an older PC ([#16](https://github.com/DrummingBird1/sonic06-recomp/issues/16)); nobody has reported finishing Shadow's or Silver's yet. You need your own copy of the game (BLES00028). This project is not affiliated with or endorsed by SEGA.
+> **Version 0.4.0 is an early work in progress.** Every stage and boss starts. One player has reported finishing Sonic's and Silver's stories on an older PC ([#16](https://github.com/DrummingBird1/sonic06-recomp/issues/16), [#25](https://github.com/DrummingBird1/sonic06-recomp/issues/25)); nobody has reported finishing Shadow's yet. You need your own copy of the game (BLES00028). This project is not affiliated with or endorsed by SEGA.
 
 ## Screenshots
 
@@ -98,7 +98,7 @@ It speaks English, Hebrew, Spanish, French, German, Italian, Portuguese (Brazil)
 
 **Then**
 
-1. Download `Soleanna-0.3.0.exe` from the [release](https://github.com/DrummingBird1/sonic06-recomp/releases/tag/v0.3.0) and run it. It asks where to install (a `Soleanna` folder next to it, or one you pick), unpacks the build scripts there, adds a desktop shortcut and opens the launcher. The file is not signed, so Windows may warn about it first: **More info**, then **Run anyway**. Running it again opens your install, and a newer version offers to update it. In a git checkout, run `Sonic06.cmd` instead, which builds the launcher first (it needs the .NET SDK).
+1. Download `Soleanna-0.4.0.exe` from the [release](https://github.com/DrummingBird1/sonic06-recomp/releases/tag/v0.4.0) and run it. It asks where to install (a `Soleanna` folder next to it, or one you pick), unpacks the build scripts there, adds a desktop shortcut and opens the launcher. The file is not signed, so Windows may warn about it first: **More info**, then **Run anyway**. Running it again opens your install, and a newer version offers to update it. In a git checkout, run `Sonic06.cmd` instead, which builds the launcher first (it needs the .NET SDK).
 2. Open **Setup** and press **Set up everything**. It lists what it will do and asks before it installs or downloads anything. Then it:
    - installs the missing build tools: LLVM, CMake, Ninja, Git, uv and PowerShell 7 with winget, and Microsoft's C runtime and Windows SDK (about 630 MB, with [xwin](https://github.com/Jake-Shadle/xwin)) once you accept Microsoft's license. Visual Studio is not needed; if you have it with the C++ tools, the build uses it.
    - copies your disc into `game/` and decrypts it with your RPCS3,
