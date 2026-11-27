@@ -34,7 +34,7 @@ The current state and the open questions, built from the changelog, the README a
 
 ## Help wanted
 
-- **#6:** review the launcher's translations (ten languages).
+- **#6:** review the launcher's translations (eleven languages, Simplified Chinese added in 0.4.0).
 - **#1, #2, #5, #7:** play, test controllers, try a clean PC, and try other hardware.
 - **Weak PCs:** try the "Weak PC" preset and say how it plays.
 

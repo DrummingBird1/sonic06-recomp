@@ -44,7 +44,7 @@ Soleanna (this repository is `sonic06-recomp`) is an unofficial PC port of Sonic
 ## Test
 
 - CI (`.github/workflows/checks.yml`) runs `python tools/ci/check_repo.py --selftest`, `python tools/ci/check_repo.py` (no game files, no oversized files, pictures only in `docs/images/` and `launcher/`, valid translations, no machine paths) and `dotnet build launcher -c Release`. The game itself cannot be built in CI because it needs a disc.
-- There are no unit tests for the port. Verify by running it and measuring: a log line, a frame rate before and after, a screenshot. For the launcher, `tools/launcher_ui.ps1` clicks through its pages and `Launcher.exe --layout <file>` looks for cut text in all ten languages.
+- There are no unit tests for the port. Verify by running it and measuring: a log line, a frame rate before and after, a screenshot. For the launcher, `tools/launcher_ui.ps1` clicks through its pages and `Launcher.exe --layout <file>` looks for cut text in every language.
 - Not verified while writing this file: the commands above come from `CONTRIBUTING.md`, the CI workflow and the project's own notes, not from a run.
 
 ## Reporting

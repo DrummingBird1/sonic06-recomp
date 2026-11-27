@@ -24,7 +24,8 @@ namespace Sonic06Launcher
         public static readonly (string Code, string Native)[] Languages =
         {
             ("en", "English"), ("he", "עברית"), ("es", "Español"), ("fr", "Français"), ("de", "Deutsch"),
-            ("it", "Italiano"), ("pt-BR", "Português (Brasil)"), ("ja", "日本語"), ("ru", "Русский"), ("ar", "العربية"),
+            ("it", "Italiano"), ("pt-BR", "Português (Brasil)"), ("ja", "日本語"), ("zh-CN", "简体中文"), ("ru", "Русский"),
+            ("ar", "العربية"),
         };
 
         Dictionary<string, string> cur = new Dictionary<string, string>(), en;
@@ -72,6 +73,8 @@ namespace Sonic06Launcher
             var c = CultureInfo.CurrentUICulture;
             if (Languages.Any(l => l.Code == c.Name)) return c.Name;
             if (c.TwoLetterISOLanguageName == "pt") return "pt-BR";
+            // Simplified Chinese only (zh-CN, zh-SG, zh-Hans); Traditional (zh-TW, zh-HK) stays English.
+            if (c.Name == "zh-SG" || c.Name.StartsWith("zh-Hans")) return "zh-CN";
             var two = c.TwoLetterISOLanguageName == "iw" ? "he" : c.TwoLetterISOLanguageName;
             return Languages.Any(l => l.Code == two) ? two : "en";
         }

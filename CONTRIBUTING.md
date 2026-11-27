@@ -64,7 +64,7 @@ pwsh tools/run.ps1 -Seconds 60 -Env 'PS3_VERBOSE=0;PAD_SCRIPT=12:0x4000'
 - **`CELLMARK_DUMP*`**: saves frames.
 - **`SONIC06_BOOT=stage`**: starts in the developer menu, the quickest way into any stage.
 
-The settings the port starts with, and why, are in `src/sonic06_config.c`. For the launcher, `tools/launcher_ui.ps1` clicks through its pages, and `Launcher.exe --layout <file>` looks for cut text in all ten languages.
+The settings the port starts with, and why, are in `src/sonic06_config.c`. For the launcher, `tools/launcher_ui.ps1` clicks through its pages, and `Launcher.exe --layout <file>` looks for cut text in every language.
 
 Temporary hooks in the translated code go through `tools/re/hook.py`, which keeps a backup. Run `hook.py restore` before you commit.
 
