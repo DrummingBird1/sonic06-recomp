@@ -68,6 +68,20 @@ The settings the port starts with, and why, are in `src/sonic06_config.c`. For t
 
 Temporary hooks in the translated code go through `tools/re/hook.py`, which keeps a backup. Run `hook.py restore` before you commit.
 
+## Working with an AI coding agent
+
+Claude Code, Codex and similar agents are welcome, and much of the project was written with one. There is no `AGENTS.md` or `CLAUDE.md` in the repository on purpose: the maintainer's working notes stay local, and the checks reject them. This file is the instructions; point your agent at it. Notes of your own for an agent go in a file git ignores, for example one listed in `.git/info/exclude`.
+
+What an agent has to know besides the rule above:
+
+- **Measured, not assumed.** Something works when a run, a log line, a frame or a number shows it. Say what wasn't tested. When a check finds nothing, first show that it can find something, for example with a planted fault.
+- **One agent that runs the game per checkout.** `game/`, `work/`, `build/` and `gamedata/` belong to the folder, and git doesn't carry them. Two agents in one folder collide: a hook in `work/recompiled`, a build that replaces `build/sonic06.exe` while it runs, a save that changes the story route. A git worktree starts without the translated code or the game, so a second agent that runs the game needs its own clone and its own setup, as in [Building from source](#building-from-source), with about 10 GB of disk. Agents that only read logs or edit text can share a folder if they don't touch the same files.
+- **Commit only your own files**, with `git commit -- <files>`, so another agent's changes don't ride along. Run `python tools/ci/check_repo.py` first: it is the same check CI runs.
+- **The toolkit changes only through `work/ps3recomp` and `-Export`**, never in the ps3recomp clone it was copied from.
+- **Timing comparisons:** alternate A and B with the same exe, with nothing else loading the PC.
+- **Two traps.** A save in `gamedata/` sends EPISODE SELECT straight to the town, so move it aside when you measure the story. In Git Bash, an argument that starts with `/`, like a `sweep.py` pattern, turns into a Windows path: run it with `MSYS_NO_PATHCONV=1`.
+- **Where the state is:** the Status table in the README, [CHANGELOG.md](CHANGELOG.md), and the open [issues](https://github.com/DrummingBird1/sonic06-recomp/issues). The issues are the to-do list.
+
 ## Pull requests
 
 - **One topic per PR.** Write what you measured: a log line, a frame rate before and after, a screenshot. "Should work" isn't a result.
